@@ -42,15 +42,21 @@ export async function getReadingForZip(zip: string): Promise<FetchResult> {
     const geo = await geocodeZip(zip);
     if (!geo) throw new Error(`Could not geocode zip code: ${zip}`);
 
+    // Use upsert (not insert) so that if a concurrent request already created
+    // this zip_code a split second ago, we gracefully fetch/update that row
+    // instead of crashing on the unique constraint.
     const { data: inserted, error: insertErr } = await supabaseAdmin
       .from("locations")
-      .insert({
-        zip_code: zip,
-        city: geo.city,
-        state: geo.state,
-        lat: geo.lat,
-        lng: geo.lng,
-      })
+      .upsert(
+        {
+          zip_code: zip,
+          city: geo.city,
+          state: geo.state,
+          lat: geo.lat,
+          lng: geo.lng,
+        },
+        { onConflict: "zip_code" }
+      )
       .select()
       .single();
 
