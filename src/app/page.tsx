@@ -427,12 +427,13 @@ function SourceChip({
   return (
     <button
       type="button"
+      className="ecolens-chip"
       onClick={onClick}
       title={address ?? undefined}
       style={{
         display: "flex", alignItems: "center", gap: 8,
         background: selected ? "var(--card-bg)" : "var(--page-bg)",
-        border: selected ? "1.5px solid var(--teal)" : "1.5px solid transparent",
+        border: selected ? "1.5px solid var(--highlight)" : "1.5px solid transparent",
         borderRadius: "var(--radius-md)",
         padding: "6px 12px", fontSize: 12,
         font: "inherit",

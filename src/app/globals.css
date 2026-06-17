@@ -22,6 +22,7 @@
   --text-muted: #5f5e5a;
   --radius-md:  8px;
   --radius-lg:  12px;
+  --highlight:  #FF7A1A; /* hover/selected accent for sensor chips + map markers */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -78,4 +79,14 @@ img, svg, canvas {
   .ecolens-row1-grid {
     grid-template-columns: 1fr !important;
   }
+}
+
+/* ── Sensor/station chip hover + selected highlight ─────────────────────── */
+
+.ecolens-chip {
+  transition: border-color 0.15s ease;
+}
+
+.ecolens-chip:hover {
+  border-color: var(--highlight) !important;
 }

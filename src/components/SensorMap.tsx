@@ -41,6 +41,12 @@ function aqiHex(aqi: number | null): string {
   return "#993C1D";
 }
 
+// Hover/selected accent — keep in sync with --highlight in globals.css.
+// Hardcoded (rather than var(--highlight)) because Leaflet sets this as an
+// SVG presentation attribute / inline style on elements it controls directly,
+// and we want it to render identically on every browser, including iOS Safari.
+const HIGHLIGHT = "#FF7A1A";
+
 const DEFAULT_CENTER: [number, number] = [35.1495, -90.049]; // Memphis, TN
 
 /** The single official EPA AirNow reading for the searched zip code. */
@@ -111,7 +117,9 @@ export default function SensorMap({
         const isSelected = !selected || selected.kind === "station";
         const color = aqiHex(station.aqi);
         const size = isSelected ? 26 : 20;
-        const border = isSelected ? "4px solid #14b8a6" : "3px solid #fff";
+        const normalBorder = isSelected ? `4px solid ${HIGHLIGHT}` : "3px solid #fff";
+        const hoverBorder = isSelected ? `4px solid ${HIGHLIGHT}` : `3px solid ${HIGHLIGHT}`;
+        const border = normalBorder;
         const icon = L.divIcon({
           className: "",
           html:
@@ -141,6 +149,14 @@ export default function SensorMap({
         );
 
         marker.on("click", () => onSelect?.({ kind: "station" }));
+        marker.on("mouseover", () => {
+          const inner = marker.getElement()?.firstElementChild as HTMLElement | null;
+          if (inner) inner.style.border = hoverBorder;
+        });
+        marker.on("mouseout", () => {
+          const inner = marker.getElement()?.firstElementChild as HTMLElement | null;
+          if (inner) inner.style.border = normalBorder;
+        });
 
         markersRef.current.push(marker);
       }
@@ -148,10 +164,11 @@ export default function SensorMap({
       // ── Portable PurpleAir sensors (circle markers) ─────────────────────
       located.forEach((s) => {
         const isSelected = selected?.kind === "sensor" && selected.sensor_index === s.sensor_index;
+        const normalStyle = { color: isSelected ? HIGHLIGHT : "#fff", weight: isSelected ? 4 : 2 };
+        const hoverStyle = { color: HIGHLIGHT, weight: isSelected ? 4 : 3 };
         const marker = L.circleMarker([s.lat as number, s.lng as number], {
           radius: isSelected ? 14 : 10,
-          color: isSelected ? "#14b8a6" : "#fff",
-          weight: isSelected ? 4 : 2,
+          ...normalStyle,
           fillColor: aqiHex(s.aqi),
           fillOpacity: 0.9,
         }).addTo(mapRef.current);
@@ -170,6 +187,8 @@ export default function SensorMap({
         );
 
         marker.on("click", () => onSelect?.({ kind: "sensor", sensor_index: s.sensor_index }));
+        marker.on("mouseover", () => marker.setStyle(hoverStyle));
+        marker.on("mouseout", () => marker.setStyle(normalStyle));
 
         markersRef.current.push(marker);
       });
