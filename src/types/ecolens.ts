@@ -93,6 +93,7 @@ export interface SensorReading {
   aqi_category: AqiCategory | null;
   temperature_f: number | null;
   humidity_pct: number | null;
+  pressure_inhg: number | null;
   fetched_at: string; // ISO-8601
 }
 
@@ -101,3 +102,9 @@ export interface SensorsResponse {
   cached: boolean;
   cache_age_seconds: number;
 }
+
+// ─── Source selection (map/chip click → which reading drives the dashboard) ──
+
+export type SourceSelection =
+  | { kind: "station" }
+  | { kind: "sensor"; sensor_index: string };

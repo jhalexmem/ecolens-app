@@ -1,7 +1,14 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import type { ReadingsResponse, HistoryResponse, AirQualityReading, SensorReading, SensorsResponse } from "@/types/ecolens";
+import type {
+  ReadingsResponse,
+  HistoryResponse,
+  AirQualityReading,
+  SensorReading,
+  SensorsResponse,
+  SourceSelection,
+} from "@/types/ecolens";
 import SensorMap, { type StationPoint } from "@/components/SensorMap";
 
 // ─── AQI helpers ─────────────────────────────────────────────────────────────
@@ -57,6 +64,120 @@ function fmt(v: number | null, digits = 1): string {
 function fmtInt(v: number | null): string {
   return v != null ? Math.round(v).toString() : "—";
 }
+
+// ─── Selected reading (station or sensor → one common display shape) ─────────
+
+/**
+ * Whichever source is selected on the map (the AirNow station, by default,
+ * or any PurpleAir sensor) gets normalized into this shape so every dashboard
+ * card can read from one place instead of branching on source type. Fields a
+ * source doesn't report (e.g. PurpleAir has no wind/gases/visibility) are
+ * `null` — existing components already render `null` as "—".
+ */
+interface SelectedReading {
+  locationLabel: string;
+  zipLabel: string | null;
+  sourceLabel: string;
+  fetched_at: string;
+  cached: boolean;
+  cache_age_seconds: number;
+  aqi: number | null;
+  aqi_category: string | null;
+  dominant_pollutant: string | null;
+  pm25: number | null;
+  pm10: number | null;
+  o3_ppb: number | null;
+  no2_ppb: number | null;
+  co_ppm: number | null;
+  so2_ppb: number | null;
+  co2_ppm: number | null;
+  temperature_f: number | null;
+  feels_like_f: number | null;
+  humidity_pct: number | null;
+  pressure_inhg: number | null;
+  wind_speed_mph: number | null;
+  wind_gust_mph: number | null;
+  wind_direction_deg: number | null;
+  visibility_mi: number | null;
+  uv_index: number | null;
+  cloud_cover_pct: number | null;
+}
+
+function stationToSelectedReading(
+  d: AirQualityReading,
+  cached: boolean,
+  cacheAge: number
+): SelectedReading {
+  return {
+    locationLabel: `${d.location.city ?? d.location.zip_code}${d.location.state ? `, ${d.location.state}` : ""}`,
+    zipLabel: d.location.zip_code,
+    sourceLabel: [d.source_airnow && "EPA AirNow", d.source_openmeteo && "Open-Meteo"]
+      .filter(Boolean)
+      .join(" · "),
+    fetched_at: d.fetched_at,
+    cached,
+    cache_age_seconds: cacheAge,
+    aqi: d.aqi,
+    aqi_category: d.aqi_category,
+    dominant_pollutant: d.dominant_pollutant,
+    pm25: d.pm25,
+    pm10: d.pm10,
+    o3_ppb: d.o3_ppb,
+    no2_ppb: d.no2_ppb,
+    co_ppm: d.co_ppm,
+    so2_ppb: d.so2_ppb,
+    co2_ppm: d.co2_ppm,
+    temperature_f: d.temperature_f,
+    feels_like_f: d.feels_like_f,
+    humidity_pct: d.humidity_pct,
+    pressure_inhg: d.pressure_inhg,
+    wind_speed_mph: d.wind_speed_mph,
+    wind_gust_mph: d.wind_gust_mph,
+    wind_direction_deg: d.wind_direction_deg,
+    visibility_mi: d.visibility_mi,
+    uv_index: d.uv_index,
+    cloud_cover_pct: d.cloud_cover_pct,
+  };
+}
+
+function sensorToSelectedReading(
+  s: SensorReading,
+  cached: boolean,
+  cacheAge: number
+): SelectedReading {
+  return {
+    locationLabel: s.label ?? `Sensor ${s.sensor_index}`,
+    zipLabel: null,
+    sourceLabel: "PurpleAir",
+    fetched_at: s.fetched_at,
+    cached,
+    cache_age_seconds: cacheAge,
+    aqi: s.aqi,
+    aqi_category: s.aqi_category,
+    dominant_pollutant: s.pm25 != null ? "PM2.5" : null,
+    pm25: s.pm25,
+    pm10: s.pm10,
+    o3_ppb: null,
+    no2_ppb: null,
+    co_ppm: null,
+    so2_ppb: null,
+    co2_ppm: null,
+    temperature_f: s.temperature_f,
+    feels_like_f: null,
+    humidity_pct: s.humidity_pct,
+    pressure_inhg: s.pressure_inhg,
+    wind_speed_mph: null,
+    wind_gust_mph: null,
+    wind_direction_deg: null,
+    visibility_mi: null,
+    uv_index: null,
+    cloud_cover_pct: null,
+  };
+}
+
+// What feeds the trend chart — either the AirNow zip-code station or a
+// specific PurpleAir sensor's own history.
+type TrendSource = { kind: "station"; zip: string } | { kind: "sensor"; sensorIndex: string };
 
 // ─── Gauge arc ───────────────────────────────────────────────────────────────
 
@@ -171,13 +292,18 @@ function StatCard({ icon, label, value, sub }: { icon: string; label: string; va
 
 // ─── Trend chart ─────────────────────────────────────────────────────────────
 
-function TrendChart({ zip }: { zip: string }) {
+function TrendChart({ source }: { source: TrendSource }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<unknown>(null);
   const [points, setPoints] = useState<{ label: string; aqi: number | null }[]>([]);
 
   useEffect(() => {
-    fetch(`/api/history?zip=${zip}&hours=24`)
+    const url =
+      source.kind === "station"
+        ? `/api/history?zip=${source.zip}&hours=24`
+        : `/api/sensor-history?sensor_index=${source.sensorIndex}&hours=24`;
+
+    fetch(url)
       .then((r) => r.json())
       .then((res: HistoryResponse) => {
         const data = res.data.map((p) => ({
@@ -187,7 +313,8 @@ function TrendChart({ zip }: { zip: string }) {
         setPoints(data);
       })
       .catch(() => {});
-  }, [zip]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source.kind, source.kind === "station" ? source.zip : source.sensorIndex]);
 
   useEffect(() => {
     if (!points.length || !canvasRef.current) return;
@@ -279,13 +406,25 @@ function TrendChart({ zip }: { zip: string }) {
 
 // ─── Source comparison chip ──────────────────────────────────────────────
 
-function SourceChip({ label, aqi, sub }: { label: string; aqi: number | null; sub?: string }) {
+function SourceChip({
+  label, aqi, sub, selected, onClick,
+}: {
+  label: string; aqi: number | null; sub?: string; selected?: boolean; onClick?: () => void;
+}) {
   return (
-    <div style={{
-      display: "flex", alignItems: "center", gap: 8,
-      background: "var(--page-bg)", borderRadius: "var(--radius-md)",
-      padding: "6px 12px", fontSize: 12,
-    }}>
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        display: "flex", alignItems: "center", gap: 8,
+        background: selected ? "var(--card-bg)" : "var(--page-bg)",
+        border: selected ? "1.5px solid var(--teal)" : "1.5px solid transparent",
+        borderRadius: "var(--radius-md)",
+        padding: "6px 12px", fontSize: 12,
+        font: "inherit",
+        cursor: onClick ? "pointer" : "default",
+      }}
+    >
       <span style={{
         width: 10, height: 10, borderRadius: "50%",
         background: aqiColor(aqi), display: "inline-block", flexShrink: 0,
@@ -294,41 +433,29 @@ function SourceChip({ label, aqi, sub }: { label: string; aqi: number | null; su
       <span style={{ color: "var(--text-muted)" }}>
         {aqi ?? "—"}{sub ? ` · ${sub}` : ""}
       </span>
-    </div>
+    </button>
   );
 }
 
 // ─── Unified sensor map + comparison card ──────────────────────────────────
 
-function AllSensorsCard({ reading }: { reading: AirQualityReading }) {
-  const [sensors, setSensors] = useState<SensorReading[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [sensorsCached, setSensorsCached] = useState(false);
-  const [sensorsCacheAge, setSensorsCacheAge] = useState(0);
-
-  const loadSensors = useCallback(async () => {
-    try {
-      const res = await fetch("/api/sensors");
-      const json = (await res.json()) as SensorsResponse;
-      if (res.ok) {
-        setSensors(json.data ?? []);
-        setSensorsCached(json.cached);
-        setSensorsCacheAge(json.cache_age_seconds);
-      }
-    } catch {
-      // Non-fatal — sensor fleet is a supplementary view
-    } finally {
-      setLoaded(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadSensors();
-    // Refresh roughly as often as the server-side cache TTL (5 min)
-    const id = setInterval(loadSensors, 5 * 60 * 1000);
-    return () => clearInterval(id);
-  }, [loadSensors]);
-
+function AllSensorsCard({
+  reading,
+  sensors,
+  loaded,
+  sensorsCached,
+  sensorsCacheAge,
+  selected,
+  onSelect,
+}: {
+  reading: AirQualityReading;
+  sensors: SensorReading[];
+  loaded: boolean;
+  sensorsCached: boolean;
+  sensorsCacheAge: number;
+  selected: SourceSelection;
+  onSelect: (sel: SourceSelection) => void;
+}) {
   // The official EPA AirNow reading, reshaped into a map point. Memoized so
   // SensorMap's effect doesn't redraw the whole map on every parent re-render.
   const station: StationPoint = useMemo(() => ({
@@ -352,6 +479,7 @@ function AllSensorsCard({ reading }: { reading: AirQualityReading }) {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
         <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
           Live sensor map {`(EPA AirNow${sensors.length > 0 ? ` + ${sensors.length} PurpleAir` : ""})`}
+          {" · click a marker or chip to view its data below"}
         </div>
         {loaded && sensors.length > 0 && (
           <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
@@ -360,16 +488,24 @@ function AllSensorsCard({ reading }: { reading: AirQualityReading }) {
         )}
       </div>
 
-      <SensorMap sensors={sensors} station={station} />
+      <SensorMap sensors={sensors} station={station} selected={selected} onSelect={onSelect} />
 
       {sensors.length > 0 ? (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
-          <SourceChip label="EPA AirNow" aqi={reading.aqi} sub={reading.location.zip_code} />
+          <SourceChip
+            label="EPA AirNow"
+            aqi={reading.aqi}
+            sub={reading.location.zip_code}
+            selected={selected.kind === "station"}
+            onClick={() => onSelect({ kind: "station" })}
+          />
           {sensors.map((s) => (
             <SourceChip
               key={s.sensor_index}
               label={s.label ?? `Sensor ${s.sensor_index}`}
               aqi={s.aqi}
+              selected={selected.kind === "sensor" && selected.sensor_index === s.sensor_index}
+              onClick={() => onSelect({ kind: "sensor", sensor_index: s.sensor_index })}
             />
           ))}
         </div>
@@ -399,6 +535,17 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Portable PurpleAir sensor fleet — lifted up from AllSensorsCard so the
+  // whole dashboard (not just the map) can react to whichever one is selected.
+  const [sensors, setSensors] = useState<SensorReading[]>([]);
+  const [sensorsLoaded, setSensorsLoaded] = useState(false);
+  const [sensorsCached, setSensorsCached] = useState(false);
+  const [sensorsCacheAge, setSensorsCacheAge] = useState(0);
+
+  // Which source's data drives the dashboard cards — the AirNow station by
+  // default, or whichever map marker / chip the user last clicked.
+  const [selected, setSelected] = useState<SourceSelection>({ kind: "station" });
+
   const fetchData = useCallback(async (z: string) => {
     setLoading(true);
     setError(null);
@@ -411,10 +558,27 @@ export default function Home() {
       setCached(r.cached);
       setCacheAge(r.cache_age_seconds);
       setZip(z);
+      setSelected({ kind: "station" }); // a new search always resets the view to the station
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unknown error");
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const loadSensors = useCallback(async () => {
+    try {
+      const res = await fetch("/api/sensors");
+      const json = (await res.json()) as SensorsResponse;
+      if (res.ok) {
+        setSensors(json.data ?? []);
+        setSensorsCached(json.cached);
+        setSensorsCacheAge(json.cache_age_seconds);
+      }
+    } catch {
+      // Non-fatal — sensor fleet is a supplementary view
+    } finally {
+      setSensorsLoaded(true);
     }
   }, []);
 
@@ -424,6 +588,14 @@ export default function Home() {
     fetchData(DEFAULT_ZIP);
   }, [fetchData]);
 
+  // Load the sensor fleet on mount, then refresh roughly as often as the
+  // server-side cache TTL (5 min).
+  useEffect(() => {
+    loadSensors();
+    const id = setInterval(loadSensors, 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [loadSensors]);
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const z = input.trim().replace(/\D/g, "").slice(0, 5);
@@ -431,7 +603,27 @@ export default function Home() {
   }
 
   const d = data;
-  const aqi = d?.aqi ?? null;
+
+  // Normalize whichever source is selected into one common display shape.
+  // Falls back to the station reading if a previously-selected sensor drops
+  // out of the live fleet (e.g. it went offline).
+  const selectedReading = useMemo<SelectedReading | null>(() => {
+    if (!d) return null;
+    if (selected.kind === "sensor") {
+      const s = sensors.find((x) => x.sensor_index === selected.sensor_index);
+      if (s) return sensorToSelectedReading(s, sensorsCached, sensorsCacheAge);
+    }
+    return stationToSelectedReading(d, cached, cacheAge);
+  }, [d, cached, cacheAge, selected, sensors, sensorsCached, sensorsCacheAge]);
+
+  const trendSource = useMemo<TrendSource>(() => {
+    if (selected.kind === "sensor" && sensors.some((s) => s.sensor_index === selected.sensor_index)) {
+      return { kind: "sensor", sensorIndex: selected.sensor_index };
+    }
+    return { kind: "station", zip };
+  }, [selected, sensors, zip]);
+
+  const aqi = selectedReading?.aqi ?? null;
 
   return (
     <main style={{ maxWidth: 900, margin: "0 auto", padding: "1.5rem 1rem 3rem" }}>
@@ -506,8 +698,19 @@ export default function Home() {
       )}
 
       {/* ── Dashboard ──────────────────────────────────────────────────── */}
-      {d && (
+      {d && selectedReading && (
         <>
+          {/* ── Live sensor map (AirNow + PurpleAir) ────────────────────── */}
+          <AllSensorsCard
+            reading={d}
+            sensors={sensors}
+            loaded={sensorsLoaded}
+            sensorsCached={sensorsCached}
+            sensorsCacheAge={sensorsCacheAge}
+            selected={selected}
+            onSelect={setSelected}
+          />
+
           {/* Location + last updated bar */}
           <div style={{
             display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -519,18 +722,22 @@ export default function Home() {
             fontSize: 13,
           }}>
             <span style={{ fontWeight: 500 }}>
-              📍 {d.location.city ?? d.location.zip_code}
-              {d.location.state ? `, ${d.location.state}` : ""}
-              {" "}
-              <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>({d.location.zip_code})</span>
+              📍 {selectedReading.locationLabel}
+              {selectedReading.zipLabel && (
+                <>
+                  {" "}
+                  <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>
+                    ({selectedReading.zipLabel})
+                  </span>
+                </>
+              )}
             </span>
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-              {cached
-                ? `Cached · ${Math.round(cacheAge / 60)} min ago`
-                : `Live · ${new Date(d.fetched_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
+              {selectedReading.cached
+                ? `Cached · ${Math.round(selectedReading.cache_age_seconds / 60)} min ago`
+                : `Live · ${new Date(selectedReading.fetched_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
               {" · "}
-              {[d.source_airnow && "EPA AirNow", d.source_openmeteo && "Open-Meteo"]
-                .filter(Boolean).join(" · ")}
+              {selectedReading.sourceLabel}
             </span>
           </div>
 
@@ -555,9 +762,9 @@ export default function Home() {
               }}>
                 {aqiLabel(aqi)}
               </div>
-              {d.dominant_pollutant && (
+              {selectedReading.dominant_pollutant && (
                 <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
-                  Dominant: {d.dominant_pollutant}
+                  Dominant: {selectedReading.dominant_pollutant}
                 </div>
               )}
               <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8, textAlign: "center", lineHeight: 1.4 }}>
@@ -571,14 +778,14 @@ export default function Home() {
               borderRadius: "var(--radius-lg)", padding: "1rem 1.25rem",
             }}>
               <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>Pollutant breakdown</div>
-              <PollutantRow name="PM2.5" value={d.pm25}   unit="µg/m³" max={75}   color="var(--amber)" />
-              <PollutantRow name="PM10"  value={d.pm10}   unit="µg/m³" max={150}  color="var(--green)" />
-              <PollutantRow name="O₃"    value={d.o3_ppb} unit="ppb"   max={120}  color="var(--amber)" />
-              <PollutantRow name="NO₂"   value={d.no2_ppb} unit="ppb"  max={100}  color="var(--green)" />
-              <PollutantRow name="CO"    value={d.co_ppm} unit="ppm"   max={9}    color="var(--green)" />
-              <PollutantRow name="SO₂"   value={d.so2_ppb} unit="ppb"  max={75}   color="var(--green)" />
-              {d.co2_ppm != null && (
-                <PollutantRow name="CO₂" value={d.co2_ppm} unit="ppm" max={600} color="var(--orange)" />
+              <PollutantRow name="PM2.5" value={selectedReading.pm25}   unit="µg/m³" max={75}   color="var(--amber)" />
+              <PollutantRow name="PM10"  value={selectedReading.pm10}   unit="µg/m³" max={150}  color="var(--green)" />
+              <PollutantRow name="O₃"    value={selectedReading.o3_ppb} unit="ppb"   max={120}  color="var(--amber)" />
+              <PollutantRow name="NO₂"   value={selectedReading.no2_ppb} unit="ppb"  max={100}  color="var(--green)" />
+              <PollutantRow name="CO"    value={selectedReading.co_ppm} unit="ppm"   max={9}    color="var(--green)" />
+              <PollutantRow name="SO₂"   value={selectedReading.so2_ppb} unit="ppb"  max={75}   color="var(--green)" />
+              {selectedReading.co2_ppm != null && (
+                <PollutantRow name="CO₂" value={selectedReading.co2_ppm} unit="ppm" max={600} color="var(--orange)" />
               )}
             </div>
           </div>
@@ -593,13 +800,13 @@ export default function Home() {
             }}>
               <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>Wind</div>
               <div style={{ display: "flex", justifyContent: "center" }}>
-                <WindCompass deg={d.wind_direction_deg} />
+                <WindCompass deg={selectedReading.wind_direction_deg} />
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
-                <StatCard icon="💨" label="Speed"     value={`${fmt(d.wind_speed_mph)} mph`} />
-                <StatCard icon="💨" label="Gust"      value={`${fmt(d.wind_gust_mph)} mph`} />
-                <StatCard icon="🧭" label="Direction" value={`${fmtInt(d.wind_direction_deg)}°`} />
-                <StatCard icon="🧭" label="Bearing"   value={bearingLabel(d.wind_direction_deg)} />
+                <StatCard icon="💨" label="Speed"     value={`${fmt(selectedReading.wind_speed_mph)} mph`} />
+                <StatCard icon="💨" label="Gust"      value={`${fmt(selectedReading.wind_gust_mph)} mph`} />
+                <StatCard icon="🧭" label="Direction" value={`${fmtInt(selectedReading.wind_direction_deg)}°`} />
+                <StatCard icon="🧭" label="Bearing"   value={bearingLabel(selectedReading.wind_direction_deg)} />
               </div>
             </div>
 
@@ -612,11 +819,11 @@ export default function Home() {
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 <StatCard
                   icon="🌡️" label="Temperature"
-                  value={`${fmt(d.temperature_f, 0)}°F`}
-                  sub={d.feels_like_f != null ? `Feels like ${fmt(d.feels_like_f, 0)}°F` : undefined}
+                  value={`${fmt(selectedReading.temperature_f, 0)}°F`}
+                  sub={selectedReading.feels_like_f != null ? `Feels like ${fmt(selectedReading.feels_like_f, 0)}°F` : undefined}
                 />
-                <StatCard icon="💧" label="Humidity"    value={`${fmtInt(d.humidity_pct)}%`} />
-                <StatCard icon="🔵" label="Pressure"    value={`${fmt(d.pressure_inhg)} inHg`} />
+                <StatCard icon="💧" label="Humidity"    value={`${fmtInt(selectedReading.humidity_pct)}%`} />
+                <StatCard icon="🔵" label="Pressure"    value={`${fmt(selectedReading.pressure_inhg)} inHg`} />
               </div>
             </div>
 
@@ -627,19 +834,19 @@ export default function Home() {
             }}>
               <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>Visibility & sky</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                <StatCard icon="👁️" label="Visibility"   value={`${fmt(d.visibility_mi)} mi`} />
+                <StatCard icon="👁️" label="Visibility"   value={`${fmt(selectedReading.visibility_mi)} mi`} />
                 <StatCard
                   icon="☀️" label="UV Index"
-                  value={fmtInt(d.uv_index)}
+                  value={fmtInt(selectedReading.uv_index)}
                   sub={
-                    d.uv_index == null ? undefined :
-                    d.uv_index <= 2 ? "Low" :
-                    d.uv_index <= 5 ? "Moderate" :
-                    d.uv_index <= 7 ? "High" :
-                    d.uv_index <= 10 ? "Very High" : "Extreme"
+                    selectedReading.uv_index == null ? undefined :
+                    selectedReading.uv_index <= 2 ? "Low" :
+                    selectedReading.uv_index <= 5 ? "Moderate" :
+                    selectedReading.uv_index <= 7 ? "High" :
+                    selectedReading.uv_index <= 10 ? "Very High" : "Extreme"
                   }
                 />
-                <StatCard icon="☁️" label="Cloud cover" value={`${fmtInt(d.cloud_cover_pct)}%`} />
+                <StatCard icon="☁️" label="Cloud cover" value={`${fmtInt(selectedReading.cloud_cover_pct)}%`} />
               </div>
             </div>
           </div>
@@ -666,20 +873,21 @@ export default function Home() {
                 ))}
               </div>
             </div>
-            <TrendChart key={zip} zip={zip} />
+            <TrendChart key={selected.kind === "station" ? `station-${zip}` : `sensor-${selected.sensor_index}`} source={trendSource} />
           </div>
-
-          {/* ── Row 4: Live sensor map (AirNow + PurpleAir) ─────────────── */}
-          <AllSensorsCard reading={d} />
 
           {/* ── Footer ──────────────────────────────────────────────── */}
           <div style={{
             fontSize: 11, color: "var(--text-muted)",
             display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8,
           }}>
-            <span>Data: EPA AirNow · Open-Meteo (CC BY 4.0) · Nominatim/OSM (ODbL)</span>
+            <span>
+              {selected.kind === "station"
+                ? "Data: EPA AirNow · Open-Meteo (CC BY 4.0) · Nominatim/OSM (ODbL)"
+                : "Data: PurpleAir portable sensor"}
+            </span>
             <button
-              onClick={() => fetchData(zip)}
+              onClick={() => (selected.kind === "station" ? fetchData(zip) : loadSensors())}
               disabled={loading}
               style={{
                 fontSize: 11, padding: "3px 10px",

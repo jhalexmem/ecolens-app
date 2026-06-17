@@ -24,6 +24,7 @@ export interface SensorResult {
   aqi_category: string | null;
   temperature_f: number | null;
   humidity_pct: number | null;
+  pressure_inhg: number | null;
   fetched_at: string;
 }
 
@@ -54,6 +55,7 @@ function rowToResult(row: any): SensorResult {
     aqi_category: row.aqi_category,
     temperature_f: row.temperature_f,
     humidity_pct: row.humidity_pct,
+    pressure_inhg: row.pressure_inhg,
     fetched_at: row.fetched_at,
   };
 }
@@ -189,6 +191,7 @@ export async function getPurpleAirSensorReadings(): Promise<SensorsFetchResult> 
         aqi_category: reading.aqi_category,
         temperature_f: reading.temperature_f,
         humidity_pct: reading.humidity_pct,
+        pressure_inhg: reading.pressure_inhg,
         fetched_at: nowIso,
       };
     }),

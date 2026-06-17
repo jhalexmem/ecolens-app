@@ -10,7 +10,7 @@
 
 import { useEffect, useRef } from "react";
 import "leaflet/dist/leaflet.css";
-import type { SensorReading } from "@/types/ecolens";
+import type { SensorReading, SourceSelection } from "@/types/ecolens";
 
 function aqiHex(aqi: number | null): string {
   if (aqi == null) return "#888780";
@@ -40,9 +40,13 @@ export interface StationPoint {
 export default function SensorMap({
   sensors,
   station,
+  selected,
+  onSelect,
 }: {
   sensors: SensorReading[];
   station?: StationPoint;
+  selected?: SourceSelection;
+  onSelect?: (sel: SourceSelection) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -83,18 +87,23 @@ export default function SensorMap({
 
       // ── Official EPA AirNow station (diamond marker) ───────────────────
       if (station) {
+        const isSelected = !selected || selected.kind === "station";
         const color = aqiHex(station.aqi);
+        const size = isSelected ? 26 : 20;
+        const border = isSelected ? "4px solid #14b8a6" : "3px solid #fff";
         const icon = L.divIcon({
           className: "",
           html:
-            `<div style="width:20px;height:20px;background:${color};` +
-            `border:3px solid #fff;border-radius:4px;` +
+            `<div style="width:${size}px;height:${size}px;background:${color};` +
+            `border:${border};border-radius:4px;` +
             `box-shadow:0 1px 4px rgba(0,0,0,0.45);transform:rotate(45deg);"></div>`,
-          iconSize: [20, 20],
-          iconAnchor: [10, 10],
+          iconSize: [size, size],
+          iconAnchor: [size / 2, size / 2],
         });
 
-        const marker = L.marker([station.lat, station.lng], { icon }).addTo(mapRef.current);
+        const marker = L.marker([station.lat, station.lng], { icon, zIndexOffset: isSelected ? 1000 : 0 }).addTo(
+          mapRef.current
+        );
 
         marker.bindPopup(
           `<strong>EPA AirNow${station.city ? ` — ${station.city}` : ""}</strong><br/>` +
@@ -107,15 +116,18 @@ export default function SensorMap({
             })}`
         );
 
+        marker.on("click", () => onSelect?.({ kind: "station" }));
+
         markersRef.current.push(marker);
       }
 
       // ── Portable PurpleAir sensors (circle markers) ─────────────────────
       located.forEach((s) => {
+        const isSelected = selected?.kind === "sensor" && selected.sensor_index === s.sensor_index;
         const marker = L.circleMarker([s.lat as number, s.lng as number], {
-          radius: 10,
-          color: "#fff",
-          weight: 2,
+          radius: isSelected ? 14 : 10,
+          color: isSelected ? "#14b8a6" : "#fff",
+          weight: isSelected ? 4 : 2,
           fillColor: aqiHex(s.aqi),
           fillOpacity: 0.9,
         }).addTo(mapRef.current);
@@ -129,6 +141,8 @@ export default function SensorMap({
               minute: "2-digit",
             })}`
         );
+
+        marker.on("click", () => onSelect?.({ kind: "sensor", sensor_index: s.sensor_index }));
 
         markersRef.current.push(marker);
       });
@@ -146,7 +160,7 @@ export default function SensorMap({
     return () => {
       cancelled = true;
     };
-  }, [sensors, station]);
+  }, [sensors, station, selected, onSelect]);
 
   // Tear the map down completely on unmount (e.g. fast refresh / nav away)
   useEffect(() => {
