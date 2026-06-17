@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import type { ReadingsResponse, HistoryResponse, AirQualityReading, SensorReading, SensorsResponse } from "@/types/ecolens";
-import SensorMap from "@/components/SensorMap";
+import SensorMap, { type StationPoint } from "@/components/SensorMap";
 
 // ─── AQI helpers ─────────────────────────────────────────────────────────────
 
@@ -277,9 +277,30 @@ function TrendChart({ zip }: { zip: string }) {
   );
 }
 
-// ─── Live sensors card ─────────────────────────────────────────────────────
+// ─── Source comparison chip ──────────────────────────────────────────────
 
-function SensorsCard() {
+function SourceChip({ label, aqi, sub }: { label: string; aqi: number | null; sub?: string }) {
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 8,
+      background: "var(--page-bg)", borderRadius: "var(--radius-md)",
+      padding: "6px 12px", fontSize: 12,
+    }}>
+      <span style={{
+        width: 10, height: 10, borderRadius: "50%",
+        background: aqiColor(aqi), display: "inline-block", flexShrink: 0,
+      }} />
+      <span style={{ fontWeight: 500, color: "var(--text)" }}>{label}</span>
+      <span style={{ color: "var(--text-muted)" }}>
+        {aqi ?? "—"}{sub ? ` · ${sub}` : ""}
+      </span>
+    </div>
+  );
+}
+
+// ─── Unified sensor map + comparison card ──────────────────────────────────
+
+function AllSensorsCard({ reading }: { reading: AirQualityReading }) {
   const [sensors, setSensors] = useState<SensorReading[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [sensorsCached, setSensorsCached] = useState(false);
@@ -308,25 +329,19 @@ function SensorsCard() {
     return () => clearInterval(id);
   }, [loadSensors]);
 
-  if (loaded && sensors.length === 0) {
-    return (
-      <div
-        style={{
-          background: "var(--card-bg)", border: "0.5px solid var(--border)",
-          borderRadius: "var(--radius-lg)", padding: "1rem 1.25rem",
-          marginBottom: 12,
-        }}
-      >
-        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>
-          Live portable sensors
-        </div>
-        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
-          No portable sensors connected yet. Once PurpleAir sensor indices are
-          configured, their live locations and readings will appear here.
-        </div>
-      </div>
-    );
-  }
+  // The official EPA AirNow reading, reshaped into a map point. Memoized so
+  // SensorMap's effect doesn't redraw the whole map on every parent re-render.
+  const station: StationPoint = useMemo(() => ({
+    zip_code: reading.location.zip_code,
+    city: reading.location.city,
+    state: reading.location.state,
+    lat: reading.location.lat,
+    lng: reading.location.lng,
+    aqi: reading.aqi,
+    aqi_category: reading.aqi_category,
+    pm25: reading.pm25,
+    fetched_at: reading.fetched_at,
+  }), [reading]);
 
   return (
     <div style={{
@@ -336,16 +351,37 @@ function SensorsCard() {
     }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
         <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          Live portable sensors {sensors.length > 0 && `(${sensors.length})`}
+          Live sensor map {`(EPA AirNow${sensors.length > 0 ? ` + ${sensors.length} PurpleAir` : ""})`}
         </div>
         {loaded && sensors.length > 0 && (
           <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
             {sensorsCached ? `Cached · ${Math.round(sensorsCacheAge / 60)} min ago` : "Live"}
-            {" · PurpleAir"}
           </div>
         )}
       </div>
-      <SensorMap sensors={sensors} />
+
+      <SensorMap sensors={sensors} station={station} />
+
+      {sensors.length > 0 ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+          <SourceChip label="EPA AirNow" aqi={reading.aqi} sub={reading.location.zip_code} />
+          {sensors.map((s) => (
+            <SourceChip
+              key={s.sensor_index}
+              label={s.label ?? `Sensor ${s.sensor_index}`}
+              aqi={s.aqi}
+            />
+          ))}
+        </div>
+      ) : (
+        loaded && (
+          <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 8 }}>
+            No portable sensors configured yet. Once PurpleAir sensor indices are
+            set, they&apos;ll appear on the map and here for comparison against
+            the official AirNow reading.
+          </div>
+        )
+      )}
     </div>
   );
 }
@@ -633,8 +669,8 @@ export default function Home() {
             <TrendChart key={zip} zip={zip} />
           </div>
 
-          {/* ── Row 4: Live portable sensors ──────────────────────────── */}
-          <SensorsCard />
+          {/* ── Row 4: Live sensor map (AirNow + PurpleAir) ─────────────── */}
+          <AllSensorsCard reading={d} />
 
           {/* ── Footer ──────────────────────────────────────────────── */}
           <div style={{
