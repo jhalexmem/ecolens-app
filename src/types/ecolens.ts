@@ -108,3 +108,9 @@ export interface SensorsResponse {
 export type SourceSelection =
   | { kind: "station" }
   | { kind: "sensor"; sensor_index: string };
+
+// ─── Reverse geocoding (lat/lng → street address, for map/chip popups) ───────
+
+export interface GeocodeResponse {
+  address: string | null;
+}

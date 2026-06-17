@@ -12,6 +12,25 @@ import { useEffect, useRef } from "react";
 import "leaflet/dist/leaflet.css";
 import type { SensorReading, SourceSelection } from "@/types/ecolens";
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** "Open in Google Maps" / "Get directions" links, shared by both marker popups. */
+function mapLinksHtml(lat: number, lng: number): string {
+  const q = `${lat},${lng}`;
+  return (
+    `<a href="https://www.google.com/maps/search/?api=1&query=${q}" target="_blank" rel="noopener noreferrer">Open in Google Maps</a>` +
+    ` &middot; ` +
+    `<a href="https://www.google.com/maps/dir/?api=1&destination=${q}" target="_blank" rel="noopener noreferrer">Get directions</a>`
+  );
+}
+
 function aqiHex(aqi: number | null): string {
   if (aqi == null) return "#888780";
   if (aqi <= 50) return "#639922";
@@ -42,11 +61,13 @@ export default function SensorMap({
   station,
   selected,
   onSelect,
+  addresses,
 }: {
   sensors: SensorReading[];
   station?: StationPoint;
   selected?: SourceSelection;
   onSelect?: (sel: SourceSelection) => void;
+  addresses?: Record<string, string | null>;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -105,15 +126,18 @@ export default function SensorMap({
           mapRef.current
         );
 
+        const stationAddress = addresses?.station;
         marker.bindPopup(
           `<strong>EPA AirNow${station.city ? ` — ${station.city}` : ""}</strong><br/>` +
             `Zip ${station.zip_code}<br/>` +
+            (stationAddress ? `${escapeHtml(stationAddress)}<br/>` : "") +
             `AQI ${station.aqi ?? "—"}${station.aqi_category ? ` (${station.aqi_category})` : ""}<br/>` +
             `PM2.5: ${station.pm25 != null ? station.pm25.toFixed(1) : "—"} µg/m³<br/>` +
             `Updated ${new Date(station.fetched_at).toLocaleTimeString([], {
               hour: "2-digit",
               minute: "2-digit",
-            })}`
+            })}<br/>` +
+            mapLinksHtml(station.lat, station.lng)
         );
 
         marker.on("click", () => onSelect?.({ kind: "station" }));
@@ -132,14 +156,17 @@ export default function SensorMap({
           fillOpacity: 0.9,
         }).addTo(mapRef.current);
 
+        const sensorAddress = addresses?.[s.sensor_index];
         marker.bindPopup(
           `<strong>${s.label ?? `Sensor ${s.sensor_index}`}</strong><br/>` +
+            (sensorAddress ? `${escapeHtml(sensorAddress)}<br/>` : "") +
             `AQI ${s.aqi ?? "—"}${s.aqi_category ? ` (${s.aqi_category})` : ""}<br/>` +
             `PM2.5: ${s.pm25 != null ? s.pm25.toFixed(1) : "—"} µg/m³<br/>` +
             `Updated ${new Date(s.fetched_at).toLocaleTimeString([], {
               hour: "2-digit",
               minute: "2-digit",
-            })}`
+            })}<br/>` +
+            mapLinksHtml(s.lat as number, s.lng as number)
         );
 
         marker.on("click", () => onSelect?.({ kind: "sensor", sensor_index: s.sensor_index }));
@@ -160,7 +187,7 @@ export default function SensorMap({
     return () => {
       cancelled = true;
     };
-  }, [sensors, station, selected, onSelect]);
+  }, [sensors, station, selected, onSelect, addresses]);
 
   // Tear the map down completely on unmount (e.g. fast refresh / nav away)
   useEffect(() => {

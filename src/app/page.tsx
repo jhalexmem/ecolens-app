@@ -8,6 +8,7 @@ import type {
   SensorReading,
   SensorsResponse,
   SourceSelection,
+  GeocodeResponse,
 } from "@/types/ecolens";
 import SensorMap, { type StationPoint } from "@/components/SensorMap";
 
@@ -407,14 +408,15 @@ function TrendChart({ source }: { source: TrendSource }) {
 // ─── Source comparison chip ──────────────────────────────────────────────
 
 function SourceChip({
-  label, aqi, sub, selected, onClick,
+  label, aqi, sub, selected, onClick, address,
 }: {
-  label: string; aqi: number | null; sub?: string; selected?: boolean; onClick?: () => void;
+  label: string; aqi: number | null; sub?: string; selected?: boolean; onClick?: () => void; address?: string | null;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      title={address ?? undefined}
       style={{
         display: "flex", alignItems: "center", gap: 8,
         background: selected ? "var(--card-bg)" : "var(--page-bg)",
@@ -447,6 +449,7 @@ function AllSensorsCard({
   sensorsCacheAge,
   selected,
   onSelect,
+  addresses,
 }: {
   reading: AirQualityReading;
   sensors: SensorReading[];
@@ -455,6 +458,7 @@ function AllSensorsCard({
   sensorsCacheAge: number;
   selected: SourceSelection;
   onSelect: (sel: SourceSelection) => void;
+  addresses: Record<string, string | null>;
 }) {
   // The official EPA AirNow reading, reshaped into a map point. Memoized so
   // SensorMap's effect doesn't redraw the whole map on every parent re-render.
@@ -488,7 +492,13 @@ function AllSensorsCard({
         )}
       </div>
 
-      <SensorMap sensors={sensors} station={station} selected={selected} onSelect={onSelect} />
+      <SensorMap
+        sensors={sensors}
+        station={station}
+        selected={selected}
+        onSelect={onSelect}
+        addresses={addresses}
+      />
 
       {sensors.length > 0 ? (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
@@ -498,6 +508,7 @@ function AllSensorsCard({
             sub={reading.location.zip_code}
             selected={selected.kind === "station"}
             onClick={() => onSelect({ kind: "station" })}
+            address={addresses.station}
           />
           {sensors.map((s) => (
             <SourceChip
@@ -506,6 +517,7 @@ function AllSensorsCard({
               aqi={s.aqi}
               selected={selected.kind === "sensor" && selected.sensor_index === s.sensor_index}
               onClick={() => onSelect({ kind: "sensor", sensor_index: s.sensor_index })}
+              address={addresses[s.sensor_index]}
             />
           ))}
         </div>
@@ -545,6 +557,12 @@ export default function Home() {
   // Which source's data drives the dashboard cards — the AirNow station by
   // default, or whichever map marker / chip the user last clicked.
   const [selected, setSelected] = useState<SourceSelection>({ kind: "station" });
+
+  // Reverse-geocoded street addresses, keyed by "station" or sensor_index.
+  // Populated lazily — see the two effects below.
+  const [addresses, setAddresses] = useState<Record<string, string | null>>({});
+  const fetchedStationKey = useRef<string | null>(null);
+  const fetchedSensorKeys = useRef<Set<string>>(new Set());
 
   const fetchData = useCallback(async (z: string) => {
     setLoading(true);
@@ -595,6 +613,41 @@ export default function Home() {
     const id = setInterval(loadSensors, 5 * 60 * 1000);
     return () => clearInterval(id);
   }, [loadSensors]);
+
+  // Reverse-geocode the station's coordinates whenever they change (i.e. a
+  // new zip search). Skips refetching if it's the same spot as last time.
+  useEffect(() => {
+    if (!data) return;
+    const key = `${data.location.lat},${data.location.lng}`;
+    if (fetchedStationKey.current === key) return;
+    fetchedStationKey.current = key;
+
+    fetch(`/api/geocode?lat=${data.location.lat}&lng=${data.location.lng}`)
+      .then((r) => r.json())
+      .then((json: GeocodeResponse) => setAddresses((prev) => ({ ...prev, station: json.address ?? null })))
+      .catch(() => {
+        fetchedStationKey.current = null; // allow a retry on the next render
+      });
+  }, [data]);
+
+  // Reverse-geocode each portable sensor exactly once (addresses don't move,
+  // so there's no need to re-fetch on every 5-min sensor refresh).
+  useEffect(() => {
+    sensors.forEach((s) => {
+      if (s.lat == null || s.lng == null) return;
+      if (fetchedSensorKeys.current.has(s.sensor_index)) return;
+      fetchedSensorKeys.current.add(s.sensor_index);
+
+      fetch(`/api/geocode?lat=${s.lat}&lng=${s.lng}`)
+        .then((r) => r.json())
+        .then((json: GeocodeResponse) =>
+          setAddresses((prev) => ({ ...prev, [s.sensor_index]: json.address ?? null }))
+        )
+        .catch(() => {
+          fetchedSensorKeys.current.delete(s.sensor_index); // allow a retry later
+        });
+    });
+  }, [sensors]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -709,6 +762,7 @@ export default function Home() {
             sensorsCacheAge={sensorsCacheAge}
             selected={selected}
             onSelect={setSelected}
+            addresses={addresses}
           />
 
           {/* Location + last updated bar */}
