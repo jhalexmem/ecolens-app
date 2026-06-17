@@ -79,3 +79,25 @@ export interface ApiError {
   error: string;
   code?: string;
 }
+
+// ─── Portable sensors (PurpleAir, etc.) ───────────────────────────────────────
+
+export interface SensorReading {
+  sensor_index: string;
+  label: string | null;
+  lat: number | null;
+  lng: number | null;
+  pm25: number | null;
+  pm10: number | null;
+  aqi: number | null;
+  aqi_category: AqiCategory | null;
+  temperature_f: number | null;
+  humidity_pct: number | null;
+  fetched_at: string; // ISO-8601
+}
+
+export interface SensorsResponse {
+  data: SensorReading[];
+  cached: boolean;
+  cache_age_seconds: number;
+}

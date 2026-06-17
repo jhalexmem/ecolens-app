@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { ReadingsResponse, HistoryResponse, AirQualityReading } from "@/types/ecolens";
+import type { ReadingsResponse, HistoryResponse, AirQualityReading, SensorReading, SensorsResponse } from "@/types/ecolens";
+import SensorMap from "@/components/SensorMap";
 
 // ─── AQI helpers ─────────────────────────────────────────────────────────────
 
@@ -272,6 +273,79 @@ function TrendChart({ zip }: { zip: string }) {
   return (
     <div style={{ position: "relative", height: 180 }}>
       <canvas ref={canvasRef} role="img" aria-label="24-hour AQI trend chart" />
+    </div>
+  );
+}
+
+// ─── Live sensors card ─────────────────────────────────────────────────────
+
+function SensorsCard() {
+  const [sensors, setSensors] = useState<SensorReading[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [sensorsCached, setSensorsCached] = useState(false);
+  const [sensorsCacheAge, setSensorsCacheAge] = useState(0);
+
+  const loadSensors = useCallback(async () => {
+    try {
+      const res = await fetch("/api/sensors");
+      const json = (await res.json()) as SensorsResponse;
+      if (res.ok) {
+        setSensors(json.data ?? []);
+        setSensorsCached(json.cached);
+        setSensorsCacheAge(json.cache_age_seconds);
+      }
+    } catch {
+      // Non-fatal — sensor fleet is a supplementary view
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSensors();
+    // Refresh roughly as often as the server-side cache TTL (5 min)
+    const id = setInterval(loadSensors, 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [loadSensors]);
+
+  if (loaded && sensors.length === 0) {
+    return (
+      <div
+        style={{
+          background: "var(--card-bg)", border: "0.5px solid var(--border)",
+          borderRadius: "var(--radius-lg)", padding: "1rem 1.25rem",
+          marginBottom: 12,
+        }}
+      >
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>
+          Live portable sensors
+        </div>
+        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
+          No portable sensors connected yet. Once PurpleAir sensor indices are
+          configured, their live locations and readings will appear here.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      background: "var(--card-bg)", border: "0.5px solid var(--border)",
+      borderRadius: "var(--radius-lg)", padding: "1rem 1.25rem",
+      marginBottom: 12,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          Live portable sensors {sensors.length > 0 && `(${sensors.length})`}
+        </div>
+        {loaded && sensors.length > 0 && (
+          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+            {sensorsCached ? `Cached · ${Math.round(sensorsCacheAge / 60)} min ago` : "Live"}
+            {" · PurpleAir"}
+          </div>
+        )}
+      </div>
+      <SensorMap sensors={sensors} />
     </div>
   );
 }
@@ -558,6 +632,9 @@ export default function Home() {
             </div>
             <TrendChart key={zip} zip={zip} />
           </div>
+
+          {/* ── Row 4: Live portable sensors ──────────────────────────── */}
+          <SensorsCard />
 
           {/* ── Footer ──────────────────────────────────────────────── */}
           <div style={{

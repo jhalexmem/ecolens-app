@@ -15,6 +15,10 @@ out/
 # OS
 .DS_Store
 Thumbs.db
+.probe_delete_test.tmp
+
+# TypeScript incremental build info
+tsconfig.tsbuildinfo
 
 # IDE
 .vscode/
