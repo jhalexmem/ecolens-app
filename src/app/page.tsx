@@ -191,7 +191,13 @@ function AqiGauge({ aqi }: { aqi: number | null }) {
   const color = aqiColor(aqi);
 
   return (
-    <svg width="200" height="120" viewBox="0 0 200 120" aria-label={`AQI gauge: ${aqi ?? "no data"}`}>
+    <svg
+      width="200"
+      height="120"
+      viewBox="0 0 200 120"
+      style={{ width: "100%", maxWidth: 200, height: "auto", display: "block" }}
+      aria-label={`AQI gauge: ${aqi ?? "no data"}`}
+    >
       {/* Track */}
       <path
         d="M20,104 A80,80 0 0,1 180,104"
@@ -233,7 +239,13 @@ function AqiGauge({ aqi }: { aqi: number | null }) {
 
 function WindCompass({ deg }: { deg: number | null }) {
   return (
-    <svg width="110" height="110" viewBox="0 0 110 110" aria-label={`Wind direction: ${deg ?? "unknown"} degrees`}>
+    <svg
+      width="110"
+      height="110"
+      viewBox="0 0 110 110"
+      style={{ width: "100%", maxWidth: 110, height: "auto", display: "block" }}
+      aria-label={`Wind direction: ${deg ?? "unknown"} degrees`}
+    >
       <circle cx="55" cy="55" r="48" fill="none" stroke="var(--border)" strokeWidth="1" />
       {["N","E","S","W"].map((d, i) => {
         const angle = i * 90 - 90;
@@ -796,13 +808,14 @@ export default function Home() {
           </div>
 
           {/* ── Row 1: AQI + Pollutants ─────────────────────────────── */}
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1.4fr)", gap: 12, marginBottom: 12 }}>
+          <div className="ecolens-row1-grid" style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1.4fr)", gap: 12, marginBottom: 12 }}>
 
             {/* AQI card */}
             <div style={{
               background: "var(--card-bg)", border: "0.5px solid var(--border)",
               borderRadius: "var(--radius-lg)", padding: "1rem 1.25rem",
               display: "flex", flexDirection: "column", alignItems: "center",
+              minWidth: 0,
             }}>
               <div style={{ fontSize: 12, color: "var(--text-muted)", alignSelf: "flex-start", marginBottom: 4 }}>
                 Air Quality Index
@@ -830,6 +843,7 @@ export default function Home() {
             <div style={{
               background: "var(--card-bg)", border: "0.5px solid var(--border)",
               borderRadius: "var(--radius-lg)", padding: "1rem 1.25rem",
+              minWidth: 0,
             }}>
               <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>Pollutant breakdown</div>
               <PollutantRow name="PM2.5" value={selectedReading.pm25}   unit="µg/m³" max={75}   color="var(--amber)" />

@@ -202,7 +202,7 @@ export default function SensorMap({
   return (
     <div
       ref={containerRef}
-      style={{ height: 320, borderRadius: "var(--radius-md)", overflow: "hidden" }}
+      style={{ width: "100%", height: 320, borderRadius: "var(--radius-md)", overflow: "hidden" }}
       aria-label="Map of live portable air-quality sensors"
     />
   );

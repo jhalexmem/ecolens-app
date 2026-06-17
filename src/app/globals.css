@@ -56,3 +56,26 @@ button {
 input {
   font: inherit;
 }
+
+/* ── Mobile responsiveness ──────────────────────────────────────────────── */
+
+html {
+  -webkit-text-size-adjust: 100%; /* avoid iOS Safari's automatic font boosting */
+}
+
+html, body {
+  max-width: 100%;
+  overflow-x: hidden; /* safety net: no horizontal scroll/bounce on phones */
+}
+
+img, svg, canvas {
+  max-width: 100%;
+}
+
+@media (max-width: 640px) {
+  /* Stack the AQI gauge + pollutant breakdown row on phones instead of
+     squeezing both into a cramped 2-column layout. */
+  .ecolens-row1-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
