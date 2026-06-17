@@ -60,6 +60,8 @@ export interface StationPoint {
   aqi_category: string | null;
   pm25: number | null;
   fetched_at: string;
+  wind_speed_mph: number | null;
+  wind_direction_deg: number | null;
 }
 
 export default function SensorMap({
@@ -80,6 +82,8 @@ export default function SensorMap({
   const mapRef = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const markersRef = useRef<any[]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const windLayerRef = useRef<any>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -101,16 +105,66 @@ export default function SensorMap({
           scrollWheelZoom: false,
         });
 
-        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        // ── Selectable base layers (all free, no API key required) ───────────
+        const streetLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
           attribution:
             '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-          maxZoom: 18,
-        }).addTo(mapRef.current);
+          maxZoom: 19,
+        });
+        const topoLayer = L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
+          attribution:
+            'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, ' +
+            '<a href="http://viewfinderpanoramas.org">SRTM</a> | Map style: &copy; ' +
+            '<a href="https://opentopomap.org">OpenTopoMap</a> (<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)',
+          maxZoom: 17,
+        });
+        const satelliteLayer = L.tileLayer(
+          "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+          {
+            attribution:
+              "Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+            maxZoom: 19,
+          }
+        );
+        const lightLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+          attribution:
+            '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
+            '&copy; <a href="https://carto.com/attributions">CARTO</a>',
+          maxZoom: 20,
+          subdomains: "abcd",
+        });
+        const darkLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+          attribution:
+            '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
+            '&copy; <a href="https://carto.com/attributions">CARTO</a>',
+          maxZoom: 20,
+          subdomains: "abcd",
+        });
+
+        streetLayer.addTo(mapRef.current);
+
+        // ── Wind direction/speed overlay (toggleable, see below) ─────────────
+        windLayerRef.current = L.layerGroup().addTo(mapRef.current);
+
+        L.control
+          .layers(
+            {
+              Street: streetLayer,
+              Topographic: topoLayer,
+              Satellite: satelliteLayer,
+              Light: lightLayer,
+              Dark: darkLayer,
+            },
+            { "Wind (speed + direction)": windLayerRef.current },
+            { position: "topright", collapsed: true }
+          )
+          .addTo(mapRef.current);
       }
 
       // Clear previous markers before redrawing
       markersRef.current.forEach((m) => m.remove());
       markersRef.current = [];
+      windLayerRef.current?.clearLayers();
 
       // ── Official EPA AirNow station (diamond marker) ───────────────────
       if (station) {
@@ -141,6 +195,11 @@ export default function SensorMap({
             (stationAddress ? `${escapeHtml(stationAddress)}<br/>` : "") +
             `AQI ${station.aqi ?? "—"}${station.aqi_category ? ` (${station.aqi_category})` : ""}<br/>` +
             `PM2.5: ${station.pm25 != null ? station.pm25.toFixed(1) : "—"} µg/m³<br/>` +
+            (station.wind_speed_mph != null
+              ? `Wind: ${Math.round(station.wind_speed_mph)} mph${
+                  station.wind_direction_deg != null ? ` from ${Math.round(station.wind_direction_deg)}°` : ""
+                }<br/>`
+              : "") +
             `Updated ${new Date(station.fetched_at).toLocaleTimeString([], {
               hour: "2-digit",
               minute: "2-digit",
@@ -159,6 +218,31 @@ export default function SensorMap({
         });
 
         markersRef.current.push(marker);
+
+        // Wind direction/speed arrow — only the EPA/Open-Meteo station has
+        // wind data; portable PurpleAir sensors don't measure wind.
+        if (windLayerRef.current && station.wind_speed_mph != null && station.wind_direction_deg != null) {
+          const deg = station.wind_direction_deg;
+          const speed = Math.round(station.wind_speed_mph);
+          const windIcon = L.divIcon({
+            className: "",
+            html:
+              `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none;">` +
+              `<div style="width:0;height:0;transform:rotate(${deg}deg);` +
+              `border-left:7px solid transparent;border-right:7px solid transparent;` +
+              `border-bottom:18px solid #2563eb;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.45));"></div>` +
+              `<div style="margin-top:2px;background:rgba(0,0,0,0.7);color:#fff;font-size:10px;` +
+              `line-height:1.3;padding:1px 5px;border-radius:4px;white-space:nowrap;">${speed} mph</div>` +
+              `</div>`,
+            iconSize: [44, 44],
+            iconAnchor: [22, 44],
+          });
+          L.marker([station.lat, station.lng], {
+            icon: windIcon,
+            interactive: false,
+            zIndexOffset: 2000,
+          }).addTo(windLayerRef.current);
+        }
       }
 
       // ── Portable PurpleAir sensors (circle markers) ─────────────────────

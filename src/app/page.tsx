@@ -485,6 +485,8 @@ function AllSensorsCard({
     aqi_category: reading.aqi_category,
     pm25: reading.pm25,
     fetched_at: reading.fetched_at,
+    wind_speed_mph: reading.wind_speed_mph,
+    wind_direction_deg: reading.wind_direction_deg,
   }), [reading]);
 
   return (
