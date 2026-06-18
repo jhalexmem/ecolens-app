@@ -38,11 +38,13 @@ type WindGridPoint = {
   wind_direction_deg: number;
 };
 
-/** Light-blue (calm) → deep-blue (strong) ramp for the wind-speed wash, 0–75mph. */
+/** Mid-blue (calm) → deep navy (strong) ramp for the wind-speed wash, 0–75mph.
+ *  Deliberately never goes near-white at the low end — a barely-tinted wash
+ *  reads as "nothing happened" rather than "calm wind". */
 function speedToRgb(mph: number): [number, number, number] {
   const t = Math.max(0, Math.min(1, mph / 75));
-  const c0 = [191, 219, 254]; // tailwind blue-200
-  const c1 = [29, 78, 216]; // tailwind blue-700
+  const c0 = [147, 197, 253]; // tailwind blue-300
+  const c1 = [30, 58, 138]; // tailwind blue-900
   return [
     Math.round(c0[0] + (c1[0] - c0[0]) * t),
     Math.round(c0[1] + (c1[1] - c0[1]) * t),
@@ -68,9 +70,10 @@ function speedToRgb(mph: number): [number, number, number] {
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function createWindFlowLayer(L: any, getPoints: () => WindGridPoint[]) {
-  const PARTICLE_COUNT = 260;
+  const PARTICLE_COUNT = 320;
   const WASH_W = 48;
   const WASH_H = 36;
+  const WASH_ALPHA = 165; // out of 255 — needs to read as an obvious tint, not a hint of one
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function windAt(pts: WindGridPoint[], lat: number, lng: number) {
@@ -178,7 +181,7 @@ function createWindFlowLayer(L: any, getPoints: () => WindGridPoint[]) {
           img.data[idx] = r;
           img.data[idx + 1] = g;
           img.data[idx + 2] = b;
-          img.data[idx + 3] = 105;
+          img.data[idx + 3] = WASH_ALPHA;
         }
       }
       this._lowCtx.putImageData(img, 0, 0);
@@ -191,9 +194,11 @@ function createWindFlowLayer(L: any, getPoints: () => WindGridPoint[]) {
       const size = this._map.getSize();
 
       // Fade the previous frame's trails instead of clearing outright —
-      // produces short comet-like streaks rather than single dots/lines.
+      // produces flowing comet-like streaks rather than single dots/lines.
+      // A small erase fraction per frame keeps trails visible for a while
+      // (too fast a fade reads as nothing happening at all).
       ctx.globalCompositeOperation = "destination-out";
-      ctx.fillStyle = "rgba(0,0,0,0.07)";
+      ctx.fillStyle = "rgba(0,0,0,0.025)";
       ctx.fillRect(0, 0, size.x, size.y);
       ctx.globalCompositeOperation = "source-over";
 
@@ -203,14 +208,14 @@ function createWindFlowLayer(L: any, getPoints: () => WindGridPoint[]) {
           const latlng = this._map.containerPointToLatLng([particle.x, particle.y]);
           const wind = windAt(pts, latlng.lat, latlng.lng);
           if (!wind) continue;
-          const speedFactor = Math.min(wind.speed / 10, 3.2);
-          const vx = wind.u * (0.5 + speedFactor);
-          const vy = wind.v * (0.5 + speedFactor);
+          const speedFactor = Math.min(wind.speed / 9, 3.5);
+          const vx = wind.u * (0.8 + speedFactor);
+          const vy = wind.v * (0.8 + speedFactor);
           const nx = particle.x + vx;
           const ny = particle.y + vy;
 
-          ctx.strokeStyle = "rgba(240,247,255,0.8)";
-          ctx.lineWidth = 1.3;
+          ctx.strokeStyle = "rgba(255,255,255,0.95)";
+          ctx.lineWidth = 1.8;
           ctx.beginPath();
           ctx.moveTo(particle.x, particle.y);
           ctx.lineTo(nx, ny);
