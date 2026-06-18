@@ -92,9 +92,9 @@ img, svg, canvas {
 }
 
 /* ── Wind direction/speed badge animation (map overlays) ──────────────────── */
-/* A white circular badge (speed number + "MPH") with a small direction
-   arrow above it and a soft, breathing glow halo — our own original take
-   on the "speed badge + direction arrow" idiom used by several mainstream
+/* A white circular badge (compass letters + speed number + "MPH", stacked)
+   with a soft, breathing glow halo — our own original take on the "speed
+   badge with compass abbreviation" idiom used by several mainstream
    weather/wind apps (not a copy of any specific app's exact palette,
    typography, or chrome). The badge gently scales and brightens on a loop. */
 
@@ -111,16 +111,6 @@ img, svg, canvas {
 
 .ecolens-wind-badge {
   animation: ecolens-wind-pulse 2.4s ease-in-out infinite;
-}
-
-.ecolens-wind-arrow {
-  width: 0;
-  height: 0;
-  border-left: 6px solid transparent;
-  border-right: 6px solid transparent;
-  border-bottom: 10px solid #2563EB;
-  filter: drop-shadow(0 1px 1px rgba(255,255,255,0.9));
-  transform-origin: 50% 80%;
 }
 
 /* ── Wind speed/flow legend (bottom-left, shown while the area wind layer
@@ -152,7 +142,9 @@ img, svg, canvas {
 .ecolens-wind-legend-bar {
   width: 10px;
   border-radius: 5px;
-  background: linear-gradient(to top, #93C5FD 0%, #1E3A8A 100%);
+  /* Ticks read top(75)→bottom(0); color washes from pale at high speed
+     down to a richer steel blue at calm, matching the wash's own ramp. */
+  background: linear-gradient(to top, #407AAD 0%, #E8F2FA 100%);
 }
 
 .ecolens-wind-legend-ticks {

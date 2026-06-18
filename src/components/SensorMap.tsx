@@ -38,18 +38,32 @@ type WindGridPoint = {
   wind_direction_deg: number;
 };
 
-/** Mid-blue (calm) → deep navy (strong) ramp for the wind-speed wash, 0–75mph.
- *  Deliberately never goes near-white at the low end — a barely-tinted wash
- *  reads as "nothing happened" rather than "calm wind". */
+/** Steel-blue (calm) → pale (strong) ramp for the wind-speed wash, 0–75mph.
+ *  Modeled on the reference app's own wind-map legend, which reads counter-
+ *  intuitively: calmer air sits in a richer, more saturated blue and the
+ *  color washes OUT toward white as speed climbs. Kept fairly narrow/flat —
+ *  the reference map looks like a near-uniform color field locally, with
+ *  the moving flecks carrying most of the visual information, not big
+ *  blocks of contrasting color. Still never drops alpha low enough to read
+ *  as "nothing happened" at calm speeds. */
 function speedToRgb(mph: number): [number, number, number] {
   const t = Math.max(0, Math.min(1, mph / 75));
-  const c0 = [147, 197, 253]; // tailwind blue-300
-  const c1 = [30, 58, 138]; // tailwind blue-900
+  const c0 = [64, 122, 173]; // calm — saturated steel blue
+  const c1 = [232, 242, 250]; // strong — washed-out pale blue
   return [
     Math.round(c0[0] + (c1[0] - c0[0]) * t),
     Math.round(c0[1] + (c1[1] - c0[1]) * t),
     Math.round(c0[2] + (c1[2] - c0[2]) * t),
   ];
+}
+
+/** 8-point compass abbreviation for the direction wind is blowing FROM
+ *  (meteorological convention) — used inside the per-station badge, the
+ *  same idiom as the reference app's circular wind badge (e.g. "SE" over
+ *  the speed number, no separate arrow glyph). */
+function degToCompass(deg: number): string {
+  const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  return dirs[Math.round(deg / 45) % 8];
 }
 
 /**
@@ -70,10 +84,10 @@ function speedToRgb(mph: number): [number, number, number] {
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function createWindFlowLayer(L: any, getPoints: () => WindGridPoint[]) {
-  const PARTICLE_COUNT = 320;
+  const PARTICLE_COUNT = 420;
   const WASH_W = 48;
   const WASH_H = 36;
-  const WASH_ALPHA = 165; // out of 255 — needs to read as an obvious tint, not a hint of one
+  const WASH_ALPHA = 195; // out of 255 — reference app's wash reads as a confident, near-opaque tint
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function windAt(pts: WindGridPoint[], lat: number, lng: number) {
@@ -193,29 +207,34 @@ function createWindFlowLayer(L: any, getPoints: () => WindGridPoint[]) {
       const ctx = this._flowCtx;
       const size = this._map.getSize();
 
-      // Fade the previous frame's trails instead of clearing outright —
-      // produces flowing comet-like streaks rather than single dots/lines.
-      // A small erase fraction per frame keeps trails visible for a while
-      // (too fast a fade reads as nothing happening at all).
+      // Fade the previous frame's marks instead of clearing outright. The
+      // reference app's flecks read as short, soft dashes rather than long
+      // bright comet trails, so this fade is faster than a true streamline
+      // viz would use — short-lived enough to keep dashes short, slow
+      // enough that motion is still clearly perceptible.
       ctx.globalCompositeOperation = "destination-out";
-      ctx.fillStyle = "rgba(0,0,0,0.025)";
+      ctx.fillStyle = "rgba(0,0,0,0.09)";
       ctx.fillRect(0, 0, size.x, size.y);
       ctx.globalCompositeOperation = "source-over";
 
       const pts = getPoints();
       if (pts.length) {
+        // Soft, blurred flecks rather than crisp lines — closer to the
+        // reference app's texture than a sharp streamline.
+        ctx.shadowColor = "rgba(255,255,255,0.9)";
+        ctx.shadowBlur = 2.5;
         for (const particle of this._particles) {
           const latlng = this._map.containerPointToLatLng([particle.x, particle.y]);
           const wind = windAt(pts, latlng.lat, latlng.lng);
           if (!wind) continue;
-          const speedFactor = Math.min(wind.speed / 9, 3.5);
-          const vx = wind.u * (0.8 + speedFactor);
-          const vy = wind.v * (0.8 + speedFactor);
+          const speedFactor = Math.min(wind.speed / 12, 2.2);
+          const vx = wind.u * (0.5 + speedFactor);
+          const vy = wind.v * (0.5 + speedFactor);
           const nx = particle.x + vx;
           const ny = particle.y + vy;
 
-          ctx.strokeStyle = "rgba(255,255,255,0.95)";
-          ctx.lineWidth = 1.8;
+          ctx.strokeStyle = "rgba(255,255,255,0.8)";
+          ctx.lineWidth = 1.3;
           ctx.beginPath();
           ctx.moveTo(particle.x, particle.y);
           ctx.lineTo(nx, ny);
@@ -233,6 +252,7 @@ function createWindFlowLayer(L: any, getPoints: () => WindGridPoint[]) {
             particle.life = fresh.life;
           }
         }
+        ctx.shadowBlur = 0;
       }
 
       this._frame = requestAnimationFrame(this._animate);
@@ -511,27 +531,23 @@ export default function SensorMap({
 
         markersRef.current.push(marker);
 
-        // Wind direction/speed arrow — only the EPA/Open-Meteo station has
+        // Wind direction/speed badge — only the EPA/Open-Meteo station has
         // wind data; portable PurpleAir sensors don't measure wind.
         if (windLayerRef.current && station.wind_speed_mph != null && station.wind_direction_deg != null) {
           const speed = Math.round(station.wind_speed_mph);
-          // Arrow points the direction the wind is blowing TOWARD (data is
-          // stored as the direction it's coming FROM, so add 180°).
-          const arrowRotation = (station.wind_direction_deg + 180) % 360;
+          const compass = degToCompass(station.wind_direction_deg);
           const windIcon = L.divIcon({
             className: "",
             html:
-              `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none;width:46px;">` +
-              `<div class="ecolens-wind-arrow" style="transform:rotate(${arrowRotation}deg);"></div>` +
               `<div class="ecolens-wind-badge" style="display:flex;flex-direction:column;` +
               `align-items:center;justify-content:center;width:46px;height:46px;border-radius:50%;` +
-              `background:#ffffff;margin-top:2px;">` +
+              `background:#ffffff;pointer-events:none;">` +
+              `<div style="font-size:9px;font-weight:700;line-height:1.1;color:#64748B;letter-spacing:0.03em;">${compass}</div>` +
               `<div style="font-size:15px;font-weight:700;line-height:1;color:#1D4ED8;">${speed}</div>` +
               `<div style="font-size:7px;font-weight:600;line-height:1.1;color:#64748B;letter-spacing:0.04em;">MPH</div>` +
-              `</div>` +
               `</div>`,
-            iconSize: [46, 64],
-            iconAnchor: [23, 41],
+            iconSize: [46, 46],
+            iconAnchor: [23, 23],
           });
           L.marker([station.lat, station.lng], {
             icon: windIcon,
