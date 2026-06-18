@@ -84,6 +84,12 @@ export default function SensorMap({
   const markersRef = useRef<any[]>([]);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const windLayerRef = useRef<any>(null);
+  // Area-wide wind-pattern overlay (grid of sampled arrows) — off by
+  // default, toggled via the Leaflet layers control. See loadWindGrid below.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const windGridLayerRef = useRef<any>(null);
+  const windGridActiveRef = useRef(false);
+  const windGridDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -146,6 +152,68 @@ export default function SensorMap({
         // ── Wind direction/speed overlay (toggleable, see below) ─────────────
         windLayerRef.current = L.layerGroup().addTo(mapRef.current);
 
+        // ── Area-wide wind-pattern overlay: grid of sampled arrows ───────────
+        // Not added to the map yet — starts unchecked, since enabling it
+        // triggers a network fetch. The layers control adds/removes it from
+        // the map when the user toggles its checkbox, which fires the
+        // overlayadd/overlayremove events handled below.
+        windGridLayerRef.current = L.layerGroup();
+
+        const loadWindGrid = () => {
+          if (!mapRef.current || !windGridLayerRef.current) return;
+          const b = mapRef.current.getBounds();
+          const params = new URLSearchParams({
+            south: String(b.getSouth()),
+            west: String(b.getWest()),
+            north: String(b.getNorth()),
+            east: String(b.getEast()),
+          });
+          fetch(`/api/wind-grid?${params}`)
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data: { points?: Array<{ lat: number; lng: number; wind_speed_mph: number | null; wind_direction_deg: number | null }> } | null) => {
+              if (!data?.points || !windGridLayerRef.current) return;
+              windGridLayerRef.current.clearLayers();
+              for (const p of data.points) {
+                if (p.wind_speed_mph == null || p.wind_direction_deg == null) continue;
+                const deg = p.wind_direction_deg;
+                const speed = Math.round(p.wind_speed_mph);
+                const icon = L.divIcon({
+                  className: "",
+                  html:
+                    `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none;opacity:0.85;">` +
+                    `<div style="width:0;height:0;transform:rotate(${deg}deg);` +
+                    `border-left:5px solid transparent;border-right:5px solid transparent;` +
+                    `border-bottom:13px solid #6b7280;filter:drop-shadow(0 1px 1px rgba(0,0,0,0.4));"></div>` +
+                    `<div style="margin-top:1px;background:rgba(0,0,0,0.55);color:#fff;font-size:9px;` +
+                    `line-height:1.2;padding:0 4px;border-radius:3px;white-space:nowrap;">${speed}</div>` +
+                    `</div>`,
+                  iconSize: [28, 28],
+                  iconAnchor: [14, 28],
+                });
+                L.marker([p.lat, p.lng], { icon, interactive: false }).addTo(windGridLayerRef.current);
+              }
+            })
+            .catch(() => {
+              // Best-effort overlay — silently skip on network error.
+            });
+        };
+
+        mapRef.current.on("overlayadd", (e: { name: string }) => {
+          if (e.name !== "Wind pattern (area)") return;
+          windGridActiveRef.current = true;
+          loadWindGrid();
+        });
+        mapRef.current.on("overlayremove", (e: { name: string }) => {
+          if (e.name !== "Wind pattern (area)") return;
+          windGridActiveRef.current = false;
+          windGridLayerRef.current?.clearLayers();
+        });
+        mapRef.current.on("moveend", () => {
+          if (!windGridActiveRef.current) return;
+          if (windGridDebounceRef.current) clearTimeout(windGridDebounceRef.current);
+          windGridDebounceRef.current = setTimeout(loadWindGrid, 400);
+        });
+
         L.control
           .layers(
             {
@@ -155,7 +223,10 @@ export default function SensorMap({
               Light: lightLayer,
               Dark: darkLayer,
             },
-            { "Wind (speed + direction)": windLayerRef.current },
+            {
+              "Wind (speed + direction)": windLayerRef.current,
+              "Wind pattern (area)": windGridLayerRef.current,
+            },
             { position: "topright", collapsed: true }
           )
           .addTo(mapRef.current);
