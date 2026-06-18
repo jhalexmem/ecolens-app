@@ -31,10 +31,230 @@ function mapLinksHtml(lat: number, lng: number): string {
   );
 }
 
-/** 16-point-ish compass abbreviation from a wind direction in degrees. */
-function degToCompass(deg: number): string {
-  const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-  return dirs[Math.round(deg / 45) % 8];
+type WindGridPoint = {
+  lat: number;
+  lng: number;
+  wind_speed_mph: number;
+  wind_direction_deg: number;
+};
+
+/** Light-blue (calm) → deep-blue (strong) ramp for the wind-speed wash, 0–75mph. */
+function speedToRgb(mph: number): [number, number, number] {
+  const t = Math.max(0, Math.min(1, mph / 75));
+  const c0 = [191, 219, 254]; // tailwind blue-200
+  const c1 = [29, 78, 216]; // tailwind blue-700
+  return [
+    Math.round(c0[0] + (c1[0] - c0[0]) * t),
+    Math.round(c0[1] + (c1[1] - c0[1]) * t),
+    Math.round(c0[2] + (c1[2] - c0[2]) * t),
+  ];
+}
+
+/**
+ * Custom Leaflet layer: an animated field of drifting particles that trace
+ * the local wind direction (a "streamline" effect), plus a soft blue wash
+ * tinted by interpolated wind speed underneath. This is our own original
+ * take on the "glowing flow lines over a speed-tinted map" idiom used by
+ * several mainstream weather/wind apps — built from scratch here (plain
+ * canvas + inverse-distance-weighted interpolation over our own sampled
+ * grid data), not copied pixel-for-pixel from any one app's exact palette,
+ * particle density, or chrome.
+ *
+ * Two stacked <canvas> elements live in the overlay pane: a "wash" canvas
+ * (full repaint only on move/zoom end or new data — cheap) and a "flow"
+ * canvas (particle trails, repainted every animation frame). Both are kept
+ * pinned to the viewport on every 'move' event so they track the map
+ * without needing to be redrawn every pixel of a drag.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createWindFlowLayer(L: any, getPoints: () => WindGridPoint[]) {
+  const PARTICLE_COUNT = 260;
+  const WASH_W = 48;
+  const WASH_H = 36;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function windAt(pts: WindGridPoint[], lat: number, lng: number) {
+    let sumW = 0;
+    let sumU = 0;
+    let sumV = 0;
+    let sumSpeed = 0;
+    for (const p of pts) {
+      const dLat = lat - p.lat;
+      const dLng = lng - p.lng;
+      const distSq = dLat * dLat + dLng * dLng;
+      const w = 1 / Math.max(distSq, 1e-7);
+      // Meteorological convention: direction wind is coming FROM. Convert
+      // to a "blowing toward" unit vector for advection.
+      const toRad = (p.wind_direction_deg * Math.PI) / 180 + Math.PI;
+      sumU += Math.sin(toRad) * w;
+      sumV += -Math.cos(toRad) * w; // screen y grows downward
+      sumW += w;
+      sumSpeed += p.wind_speed_mph * w;
+    }
+    if (sumW === 0) return null;
+    return { u: sumU / sumW, v: sumV / sumW, speed: sumSpeed / sumW };
+  }
+
+  const WindFlowLayer = L.Layer.extend({
+    onAdd(map: L.Map) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      this._map = map as any;
+      this._washCanvas = L.DomUtil.create("canvas", "ecolens-wind-wash-canvas");
+      this._flowCanvas = L.DomUtil.create("canvas", "ecolens-wind-flow-canvas");
+      this._washCtx = this._washCanvas.getContext("2d");
+      this._flowCtx = this._flowCanvas.getContext("2d");
+      this._lowCanvas = document.createElement("canvas");
+      this._lowCanvas.width = WASH_W;
+      this._lowCanvas.height = WASH_H;
+      this._lowCtx = this._lowCanvas.getContext("2d");
+
+      const pane = map.getPanes().overlayPane;
+      pane.appendChild(this._washCanvas);
+      pane.appendChild(this._flowCanvas);
+
+      this._reset = this._reset.bind(this);
+      this._animate = this._animate.bind(this);
+      this.refreshWash = this.refreshWash.bind(this);
+
+      map.on("move", this._reset);
+      map.on("resize", this._reset);
+      map.on("moveend", this.refreshWash);
+
+      this._reset();
+      this._particles = [];
+      const size = map.getSize();
+      for (let i = 0; i < PARTICLE_COUNT; i++) this._particles.push(this._spawn(size));
+      this.refreshWash();
+
+      this._running = true;
+      this._frame = requestAnimationFrame(this._animate);
+    },
+    onRemove(map: L.Map) {
+      this._running = false;
+      if (this._frame) cancelAnimationFrame(this._frame);
+      map.off("move", this._reset);
+      map.off("resize", this._reset);
+      map.off("moveend", this.refreshWash);
+      L.DomUtil.remove(this._washCanvas);
+      L.DomUtil.remove(this._flowCanvas);
+    },
+    _spawn(size: { x: number; y: number }) {
+      return {
+        x: Math.random() * size.x,
+        y: Math.random() * size.y,
+        age: Math.random() * 60,
+        life: 50 + Math.random() * 50,
+      };
+    },
+    _reset() {
+      const topLeft = this._map.containerPointToLayerPoint([0, 0]);
+      L.DomUtil.setPosition(this._washCanvas, topLeft);
+      L.DomUtil.setPosition(this._flowCanvas, topLeft);
+      const size = this._map.getSize();
+      for (const c of [this._washCanvas, this._flowCanvas]) {
+        if (c.width !== size.x || c.height !== size.y) {
+          c.width = size.x;
+          c.height = size.y;
+        }
+      }
+    },
+    refreshWash() {
+      if (!this._map || !this._washCtx) return;
+      const size = this._map.getSize();
+      const pts = getPoints();
+      this._washCtx.clearRect(0, 0, this._washCanvas.width, this._washCanvas.height);
+      if (!pts.length) return;
+
+      const img = this._lowCtx.createImageData(WASH_W, WASH_H);
+      for (let j = 0; j < WASH_H; j++) {
+        for (let i = 0; i < WASH_W; i++) {
+          const px = ((i + 0.5) / WASH_W) * size.x;
+          const py = ((j + 0.5) / WASH_H) * size.y;
+          const latlng = this._map.containerPointToLatLng([px, py]);
+          const wind = windAt(pts, latlng.lat, latlng.lng);
+          const speed = wind?.speed ?? 0;
+          const [r, g, b] = speedToRgb(speed);
+          const idx = (j * WASH_W + i) * 4;
+          img.data[idx] = r;
+          img.data[idx + 1] = g;
+          img.data[idx + 2] = b;
+          img.data[idx + 3] = 105;
+        }
+      }
+      this._lowCtx.putImageData(img, 0, 0);
+      this._washCtx.imageSmoothingEnabled = true;
+      this._washCtx.drawImage(this._lowCanvas, 0, 0, size.x, size.y);
+    },
+    _animate() {
+      if (!this._running) return;
+      const ctx = this._flowCtx;
+      const size = this._map.getSize();
+
+      // Fade the previous frame's trails instead of clearing outright —
+      // produces short comet-like streaks rather than single dots/lines.
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.fillStyle = "rgba(0,0,0,0.07)";
+      ctx.fillRect(0, 0, size.x, size.y);
+      ctx.globalCompositeOperation = "source-over";
+
+      const pts = getPoints();
+      if (pts.length) {
+        for (const particle of this._particles) {
+          const latlng = this._map.containerPointToLatLng([particle.x, particle.y]);
+          const wind = windAt(pts, latlng.lat, latlng.lng);
+          if (!wind) continue;
+          const speedFactor = Math.min(wind.speed / 10, 3.2);
+          const vx = wind.u * (0.5 + speedFactor);
+          const vy = wind.v * (0.5 + speedFactor);
+          const nx = particle.x + vx;
+          const ny = particle.y + vy;
+
+          ctx.strokeStyle = "rgba(240,247,255,0.8)";
+          ctx.lineWidth = 1.3;
+          ctx.beginPath();
+          ctx.moveTo(particle.x, particle.y);
+          ctx.lineTo(nx, ny);
+          ctx.stroke();
+
+          particle.x = nx;
+          particle.y = ny;
+          particle.age++;
+
+          if (particle.age > particle.life || particle.x < 0 || particle.x > size.x || particle.y < 0 || particle.y > size.y) {
+            const fresh = this._spawn(size);
+            particle.x = fresh.x;
+            particle.y = fresh.y;
+            particle.age = 0;
+            particle.life = fresh.life;
+          }
+        }
+      }
+
+      this._frame = requestAnimationFrame(this._animate);
+    },
+  });
+
+  return new WindFlowLayer();
+}
+
+/** Small vertical legend ("Wind (mph)" 0–75 gradient) shown while the area wind layer is active. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createWindLegend(L: any) {
+  const WindLegend = L.Control.extend({
+    options: { position: "bottomleft" },
+    onAdd() {
+      const div = L.DomUtil.create("div", "ecolens-wind-legend");
+      div.innerHTML =
+        `<div class="ecolens-wind-legend-title">Wind (mph)</div>` +
+        `<div class="ecolens-wind-legend-row">` +
+        `<div class="ecolens-wind-legend-bar"></div>` +
+        `<div class="ecolens-wind-legend-ticks"><span>75</span><span>50</span><span>25</span><span>0</span></div>` +
+        `</div>`;
+      L.DomEvent.disableClickPropagation(div);
+      return div;
+    },
+  });
+  return new WindLegend();
 }
 
 function aqiHex(aqi: number | null): string {
@@ -90,10 +310,15 @@ export default function SensorMap({
   const markersRef = useRef<any[]>([]);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const windLayerRef = useRef<any>(null);
-  // Area-wide wind-pattern overlay (grid of sampled arrows) — off by
-  // default, toggled via the Leaflet layers control. See loadWindGrid below.
+  // Area-wide wind-pattern overlay (animated flow field + speed wash) — off
+  // by default, toggled via the Leaflet layers control. See loadWindGrid
+  // below; windGridDataRef holds the latest sampled points that the flow
+  // layer reads from on every animation frame.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const windGridLayerRef = useRef<any>(null);
+  const windFlowLayerRef = useRef<any>(null);
+  const windGridDataRef = useRef<WindGridPoint[]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const windLegendRef = useRef<any>(null);
   const windGridActiveRef = useRef(false);
   const windGridDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // True once the one-time "fit to all known points" has run (page load /
@@ -156,15 +381,16 @@ export default function SensorMap({
         // ── Wind direction/speed overlay (toggleable, see below) ─────────────
         windLayerRef.current = L.layerGroup().addTo(mapRef.current);
 
-        // ── Area-wide wind-pattern overlay: grid of sampled arrows ───────────
+        // ── Area-wide wind-pattern overlay: animated flow field + speed wash ─
         // Not added to the map yet — starts unchecked, since enabling it
         // triggers a network fetch. The layers control adds/removes it from
         // the map when the user toggles its checkbox, which fires the
         // overlayadd/overlayremove events handled below.
-        windGridLayerRef.current = L.layerGroup();
+        windFlowLayerRef.current = createWindFlowLayer(L, () => windGridDataRef.current);
+        windLegendRef.current = createWindLegend(L);
 
         const loadWindGrid = () => {
-          if (!mapRef.current || !windGridLayerRef.current) return;
+          if (!mapRef.current) return;
           const b = mapRef.current.getBounds();
           const params = new URLSearchParams({
             south: String(b.getSouth()),
@@ -175,32 +401,11 @@ export default function SensorMap({
           fetch(`/api/wind-grid?${params}`)
             .then((res) => (res.ok ? res.json() : null))
             .then((data: { points?: Array<{ lat: number; lng: number; wind_speed_mph: number | null; wind_direction_deg: number | null }> } | null) => {
-              if (!data?.points || !windGridLayerRef.current) return;
-              windGridLayerRef.current.clearLayers();
-              let idx = 0;
-              for (const p of data.points) {
-                if (p.wind_speed_mph == null || p.wind_direction_deg == null) continue;
-                const dirLabel = degToCompass(p.wind_direction_deg);
-                const speed = Math.round(p.wind_speed_mph);
-                // Stagger each badge's pulse start so the 25-point grid breathes
-                // like a loose, flowing field rather than blinking in unison.
-                const delay = ((idx * 137) % 2600) / 1000;
-                idx++;
-                const icon = L.divIcon({
-                  className: "",
-                  html:
-                    `<div class="ecolens-wind-badge-grid" style="display:flex;flex-direction:column;` +
-                    `align-items:center;justify-content:center;width:30px;height:30px;border-radius:50%;` +
-                    `background:radial-gradient(circle, #60A5FA 0%, #2563EB 75%);color:#fff;` +
-                    `pointer-events:none;opacity:0.9;animation-delay:${delay}s;">` +
-                    `<div style="font-size:8px;font-weight:700;line-height:1;">${dirLabel}</div>` +
-                    `<div style="font-size:7px;line-height:1;">${speed}</div>` +
-                    `</div>`,
-                  iconSize: [30, 30],
-                  iconAnchor: [15, 15],
-                });
-                L.marker([p.lat, p.lng], { icon, interactive: false }).addTo(windGridLayerRef.current);
-              }
+              if (!data?.points) return;
+              windGridDataRef.current = data.points.filter(
+                (p): p is WindGridPoint => p.wind_speed_mph != null && p.wind_direction_deg != null
+              );
+              windFlowLayerRef.current?.refreshWash();
             })
             .catch(() => {
               // Best-effort overlay — silently skip on network error.
@@ -210,12 +415,15 @@ export default function SensorMap({
         mapRef.current.on("overlayadd", (e: { name: string }) => {
           if (e.name !== "Wind pattern (area)") return;
           windGridActiveRef.current = true;
+          windLegendRef.current?.addTo(mapRef.current);
           loadWindGrid();
         });
         mapRef.current.on("overlayremove", (e: { name: string }) => {
           if (e.name !== "Wind pattern (area)") return;
           windGridActiveRef.current = false;
-          windGridLayerRef.current?.clearLayers();
+          windGridDataRef.current = [];
+          windFlowLayerRef.current?.refreshWash();
+          mapRef.current.removeControl(windLegendRef.current);
         });
         mapRef.current.on("moveend", () => {
           if (!windGridActiveRef.current) return;
@@ -233,7 +441,7 @@ export default function SensorMap({
             },
             {
               "Wind (speed + direction)": windLayerRef.current,
-              "Wind pattern (area)": windGridLayerRef.current,
+              "Wind pattern (area)": windFlowLayerRef.current,
             },
             { position: "topright", collapsed: true }
           )
@@ -301,20 +509,24 @@ export default function SensorMap({
         // Wind direction/speed arrow — only the EPA/Open-Meteo station has
         // wind data; portable PurpleAir sensors don't measure wind.
         if (windLayerRef.current && station.wind_speed_mph != null && station.wind_direction_deg != null) {
-          const dirLabel = degToCompass(station.wind_direction_deg);
           const speed = Math.round(station.wind_speed_mph);
+          // Arrow points the direction the wind is blowing TOWARD (data is
+          // stored as the direction it's coming FROM, so add 180°).
+          const arrowRotation = (station.wind_direction_deg + 180) % 360;
           const windIcon = L.divIcon({
             className: "",
             html:
+              `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none;width:46px;">` +
+              `<div class="ecolens-wind-arrow" style="transform:rotate(${arrowRotation}deg);"></div>` +
               `<div class="ecolens-wind-badge" style="display:flex;flex-direction:column;` +
               `align-items:center;justify-content:center;width:46px;height:46px;border-radius:50%;` +
-              `background:radial-gradient(circle, #3B82F6 0%, #1D4ED8 70%);color:#fff;` +
-              `pointer-events:none;box-shadow:0 1px 3px rgba(0,0,0,0.4);">` +
-              `<div style="font-size:12px;font-weight:700;line-height:1;">${dirLabel}</div>` +
-              `<div style="font-size:9px;line-height:1.1;margin-top:1px;">${speed} mph</div>` +
+              `background:#ffffff;margin-top:2px;">` +
+              `<div style="font-size:15px;font-weight:700;line-height:1;color:#1D4ED8;">${speed}</div>` +
+              `<div style="font-size:7px;font-weight:600;line-height:1.1;color:#64748B;letter-spacing:0.04em;">MPH</div>` +
+              `</div>` +
               `</div>`,
-            iconSize: [46, 46],
-            iconAnchor: [23, 23],
+            iconSize: [46, 64],
+            iconAnchor: [23, 41],
           });
           L.marker([station.lat, station.lng], {
             icon: windIcon,
