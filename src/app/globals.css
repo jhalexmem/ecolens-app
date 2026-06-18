@@ -91,19 +91,29 @@ img, svg, canvas {
   border-color: var(--highlight) !important;
 }
 
-/* ── Wind direction/speed arrow animation (map overlays) ─────────────────── */
-/* Applied to the inner shape of each wind arrow divIcon in SensorMap.tsx.
-   The outer wrapper holds the static rotate(deg) for direction; this class
-   pulses/stretches along that same axis so the arrow reads as "flowing"
-   rather than static — independent of any CSS animations Leaflet itself
-   doesn't manage. */
+/* ── Wind direction/speed badge animation (map overlays) ──────────────────── */
+/* Circular badges (compass letters + mph) with an expanding "radar ping"
+   ring, modeled on the glowing pulsing wind-speed indicator in Apple
+   Weather's wind map. .ecolens-wind-badge is the larger per-station badge;
+   .ecolens-wind-badge-grid is the smaller variant used for the area-grid
+   overlay's sampled points. */
 
-@keyframes ecolens-wind-flow {
-  0%, 100% { transform: scaleY(0.85) translateY(2px); opacity: 0.6; }
-  50%      { transform: scaleY(1.15) translateY(-2px); opacity: 1; }
+@keyframes ecolens-wind-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(37,99,235,0.55); }
+  70%  { box-shadow: 0 0 0 14px rgba(37,99,235,0); }
+  100% { box-shadow: 0 0 0 0 rgba(37,99,235,0); }
 }
 
-.ecolens-wind-arrow {
-  animation: ecolens-wind-flow 1.4s ease-in-out infinite;
-  transform-origin: 50% 100%;
+.ecolens-wind-badge {
+  animation: ecolens-wind-pulse 2.2s ease-out infinite;
+}
+
+@keyframes ecolens-wind-pulse-sm {
+  0%   { box-shadow: 0 0 0 0 rgba(96,165,250,0.55); }
+  70%  { box-shadow: 0 0 0 8px rgba(96,165,250,0); }
+  100% { box-shadow: 0 0 0 0 rgba(96,165,250,0); }
+}
+
+.ecolens-wind-badge-grid {
+  animation: ecolens-wind-pulse-sm 2.2s ease-out infinite;
 }
