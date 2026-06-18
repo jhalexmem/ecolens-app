@@ -181,10 +181,13 @@ export default function SensorMap({
                   className: "",
                   html:
                     `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none;opacity:0.85;">` +
-                    `<div style="width:0;height:0;transform:rotate(${deg}deg);` +
+                    `<div style="transform:rotate(${deg}deg);">` +
+                    `<div class="ecolens-wind-arrow" style="width:0;height:0;` +
                     `border-left:5px solid transparent;border-right:5px solid transparent;` +
-                    `border-bottom:13px solid #6b7280;filter:drop-shadow(0 1px 1px rgba(0,0,0,0.4));"></div>` +
-                    `<div style="margin-top:1px;background:rgba(0,0,0,0.55);color:#fff;font-size:9px;` +
+                    `border-bottom:13px solid #60A5FA;` +
+                    `filter:drop-shadow(0 1px 1px rgba(0,0,0,0.4)) drop-shadow(0 0 3px rgba(96,165,250,0.7));"></div>` +
+                    `</div>` +
+                    `<div style="margin-top:1px;background:rgba(30,64,175,0.65);color:#fff;font-size:9px;` +
                     `line-height:1.2;padding:0 4px;border-radius:3px;white-space:nowrap;">${speed}</div>` +
                     `</div>`,
                   iconSize: [28, 28],
@@ -299,10 +302,13 @@ export default function SensorMap({
             className: "",
             html:
               `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none;">` +
-              `<div style="width:0;height:0;transform:rotate(${deg}deg);` +
+              `<div style="transform:rotate(${deg}deg);">` +
+              `<div class="ecolens-wind-arrow" style="width:0;height:0;` +
               `border-left:7px solid transparent;border-right:7px solid transparent;` +
-              `border-bottom:18px solid #2563eb;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.45));"></div>` +
-              `<div style="margin-top:2px;background:rgba(0,0,0,0.7);color:#fff;font-size:10px;` +
+              `border-bottom:18px solid #3B82F6;` +
+              `filter:drop-shadow(0 1px 2px rgba(0,0,0,0.45)) drop-shadow(0 0 4px rgba(59,130,246,0.8));"></div>` +
+              `</div>` +
+              `<div style="margin-top:2px;background:rgba(30,58,138,0.75);color:#fff;font-size:10px;` +
               `line-height:1.3;padding:1px 5px;border-radius:4px;white-space:nowrap;">${speed} mph</div>` +
               `</div>`,
             iconSize: [44, 44],

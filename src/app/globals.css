@@ -90,3 +90,20 @@ img, svg, canvas {
 .ecolens-chip:hover {
   border-color: var(--highlight) !important;
 }
+
+/* ── Wind direction/speed arrow animation (map overlays) ─────────────────── */
+/* Applied to the inner shape of each wind arrow divIcon in SensorMap.tsx.
+   The outer wrapper holds the static rotate(deg) for direction; this class
+   pulses/stretches along that same axis so the arrow reads as "flowing"
+   rather than static — independent of any CSS animations Leaflet itself
+   doesn't manage. */
+
+@keyframes ecolens-wind-flow {
+  0%, 100% { transform: scaleY(0.85) translateY(2px); opacity: 0.6; }
+  50%      { transform: scaleY(1.15) translateY(-2px); opacity: 1; }
+}
+
+.ecolens-wind-arrow {
+  animation: ecolens-wind-flow 1.4s ease-in-out infinite;
+  transform-origin: 50% 100%;
+}
