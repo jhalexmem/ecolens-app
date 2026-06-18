@@ -151,14 +151,6 @@ export default function SensorMap({
           maxZoom: 20,
           subdomains: "abcd",
         });
-        const darkLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-          attribution:
-            '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
-            '&copy; <a href="https://carto.com/attributions">CARTO</a>',
-          maxZoom: 20,
-          subdomains: "abcd",
-        });
-
         streetLayer.addTo(mapRef.current);
 
         // ── Wind direction/speed overlay (toggleable, see below) ─────────────
@@ -185,17 +177,22 @@ export default function SensorMap({
             .then((data: { points?: Array<{ lat: number; lng: number; wind_speed_mph: number | null; wind_direction_deg: number | null }> } | null) => {
               if (!data?.points || !windGridLayerRef.current) return;
               windGridLayerRef.current.clearLayers();
+              let idx = 0;
               for (const p of data.points) {
                 if (p.wind_speed_mph == null || p.wind_direction_deg == null) continue;
                 const dirLabel = degToCompass(p.wind_direction_deg);
                 const speed = Math.round(p.wind_speed_mph);
+                // Stagger each badge's pulse start so the 25-point grid breathes
+                // like a loose, flowing field rather than blinking in unison.
+                const delay = ((idx * 137) % 2600) / 1000;
+                idx++;
                 const icon = L.divIcon({
                   className: "",
                   html:
                     `<div class="ecolens-wind-badge-grid" style="display:flex;flex-direction:column;` +
                     `align-items:center;justify-content:center;width:30px;height:30px;border-radius:50%;` +
                     `background:radial-gradient(circle, #60A5FA 0%, #2563EB 75%);color:#fff;` +
-                    `pointer-events:none;opacity:0.9;">` +
+                    `pointer-events:none;opacity:0.9;animation-delay:${delay}s;">` +
                     `<div style="font-size:8px;font-weight:700;line-height:1;">${dirLabel}</div>` +
                     `<div style="font-size:7px;line-height:1;">${speed}</div>` +
                     `</div>`,
@@ -233,7 +230,6 @@ export default function SensorMap({
               Topographic: topoLayer,
               Satellite: satelliteLayer,
               Light: lightLayer,
-              Dark: darkLayer,
             },
             {
               "Wind (speed + direction)": windLayerRef.current,
@@ -446,6 +442,7 @@ export default function SensorMap({
       </button>
       <div
         ref={containerRef}
+        className="ecolens-map"
         style={{
           width: "100%",
           height: expanded ? "min(75vh, 720px)" : 320,
