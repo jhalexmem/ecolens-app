@@ -114,3 +114,23 @@ export type SourceSelection =
 export interface GeocodeResponse {
   address: string | null;
 }
+
+// ─── PAMS / NCore historical speciated pollutants (EPA AQS) ──────────────────
+// Archival data only — EPA AQS lags real-time by 6+ months while data is QA'd,
+// unlike the live AirNow/Open-Meteo feeds above. Each entry carries the actual
+// date of its most recent validated reading rather than "now".
+
+export interface PamsPollutant {
+  parameter: string;
+  parameter_code: string;
+  date_local: string; // YYYY-MM-DD — date of the most recent validated reading
+  arithmetic_mean: number | null;
+  maximum_value: number | null;
+  units_of_measure: string;
+}
+
+export interface PamsResponse {
+  site_name: string;
+  site: { state: string; county: string; site: string };
+  pollutants: PamsPollutant[];
+}

@@ -9,6 +9,7 @@ import type {
   SensorsResponse,
   SourceSelection,
   GeocodeResponse,
+  PamsResponse,
 } from "@/types/ecolens";
 import SensorMap, { type StationPoint } from "@/components/SensorMap";
 
@@ -549,6 +550,98 @@ function AllSensorsCard({
   );
 }
 
+// ─── PAMS / NCore historical pollutants (Shelby Farms) ─────────────────────
+// A fixed site, independent of whichever zip/sensor is selected above — so
+// this fetches once on mount rather than reacting to `selected`/`zip`.
+// EPA AQS lags 6+ months behind collection, so every value is shown with the
+// actual date it was measured rather than implying it's current.
+
+type PamsState =
+  | { status: "loading" }
+  | { status: "not_configured" }
+  | { status: "error"; message: string }
+  | { status: "ready"; data: PamsResponse };
+
+function PamsCard() {
+  const [state, setState] = useState<PamsState>({ status: "loading" });
+
+  useEffect(() => {
+    fetch("/api/pams")
+      .then(async (res) => {
+        const json = await res.json();
+        if (res.status === 503 && json.code === "AQS_NOT_CONFIGURED") {
+          setState({ status: "not_configured" });
+          return;
+        }
+        if (!res.ok) {
+          setState({ status: "error", message: json.error ?? "Request failed" });
+          return;
+        }
+        setState({ status: "ready", data: json as PamsResponse });
+      })
+      .catch((e) =>
+        setState({ status: "error", message: e instanceof Error ? e.message : "Unknown error" })
+      );
+  }, []);
+
+  // No AQS key configured yet — quietly omit, same convention as the
+  // PurpleAir sensor fleet when no sensor indices are configured.
+  if (state.status === "not_configured") return null;
+
+  return (
+    <div style={{
+      background: "var(--card-bg)", border: "0.5px solid var(--border)",
+      borderRadius: "var(--radius-lg)", padding: "1rem 1.25rem",
+      marginBottom: 12,
+    }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
+        <div style={{ fontSize: 13, fontWeight: 500 }}>🧪 Speciated pollutants — Shelby Farms (NCore / PAMS)</div>
+        <div style={{ fontSize: 11, color: "var(--text-muted)" }}>EPA AQS · archival, not live</div>
+      </div>
+      <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 10, lineHeight: 1.4 }}>
+        VOCs, carbonyls, and reactive nitrogen species from the federal PAMS monitor at
+        Shelby Farms Park. EPA validates this data before publishing, so each reading
+        below is the most recent one actually available — typically several months
+        old, not today.
+      </div>
+
+      {state.status === "loading" && (
+        <div style={{ fontSize: 13, color: "var(--text-muted)", padding: "8px 0" }}>Loading…</div>
+      )}
+
+      {state.status === "error" && (
+        <div style={{ fontSize: 13, color: "var(--red)", padding: "8px 0" }}>{state.message}</div>
+      )}
+
+      {state.status === "ready" && state.data.pollutants.length === 0 && (
+        <div style={{ fontSize: 13, color: "var(--text-muted)", padding: "8px 0" }}>
+          No validated PAMS data published for this site yet.
+        </div>
+      )}
+
+      {state.status === "ready" && state.data.pollutants.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8 }}>
+          {state.data.pollutants.map((p) => (
+            <div key={p.parameter_code} style={{
+              background: "var(--page-bg)", borderRadius: "var(--radius-md)",
+              padding: "8px 10px",
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text)" }}>{p.parameter}</div>
+              <div style={{ fontSize: 16, fontWeight: 500, color: "var(--text)", marginTop: 2 }}>
+                {p.arithmetic_mean != null ? p.arithmetic_mean.toFixed(2) : "—"}{" "}
+                <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-muted)" }}>{p.units_of_measure}</span>
+              </div>
+              <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>
+                as of {new Date(`${p.date_local}T00:00:00`).toLocaleDateString()}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main dashboard ───────────────────────────────────────────────────────────
 
 const DEFAULT_ZIP = "38116"; // South Memphis
@@ -946,6 +1039,9 @@ export default function Home() {
             </div>
             <TrendChart key={selected.kind === "station" ? `station-${zip}` : `sensor-${selected.sensor_index}`} source={trendSource} />
           </div>
+
+          {/* ── Row 4: PAMS / NCore historical pollutants (Shelby Farms) ── */}
+          <PamsCard />
 
           {/* ── Footer ──────────────────────────────────────────────── */}
           <div style={{
