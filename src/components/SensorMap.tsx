@@ -499,6 +499,23 @@ export default function SensorMap({
   const aqiGridDataRef = useRef<AqiGridPoint[]>([]);
   const aqiGridActiveRef = useRef(false);
   const aqiGridDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Boundary-line overlays (congressional districts, counties, ZIP/ZCTA) —
+  // plain L.geoJSON vector outlines, no fill, sourced server-side from the
+  // Census Bureau's TIGERweb service (see /api/boundaries/*). Tennessee's 9
+  // congressional districts are a small fixed set fetched once on toggle;
+  // county and ZIP lines are bbox-scoped and refetch on pan like the
+  // wind/AQI grids above.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const congressionalLayerRef = useRef<any>(null);
+  const congressionalLoadedRef = useRef(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const countyLayerRef = useRef<any>(null);
+  const countyActiveRef = useRef(false);
+  const countyDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const zipLayerRef = useRef<any>(null);
+  const zipActiveRef = useRef(false);
+  const zipDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // True once the one-time "fit to all known points" has run (page load /
   // refresh). After that, selection changes pan to the selected point
   // instead of re-fitting the whole metro area.
@@ -594,6 +611,38 @@ export default function SensorMap({
           ...aqiGridDataRef.current,
         ]);
 
+        // ── Boundary-line overlays: plain vector outlines, no fill ───────────
+        // Colors match TIGERweb's own default Census renderer for each layer,
+        // so they read as "official" and stay visually distinct from the
+        // wind (steel blue flecks) and AQI (green-to-gold wash) overlays.
+        congressionalLayerRef.current = L.geoJSON(undefined, {
+          style: { color: "#1E82C3", weight: 2, dashArray: "6,4", fillOpacity: 0 },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          onEachFeature: (feature: any, layer: any) => {
+            const p = feature.properties ?? {};
+            const label = p.CD119 ? `TN Congressional District ${p.CD119}` : p.BASENAME ?? p.NAME;
+            if (label) layer.bindPopup(label);
+          },
+        });
+        countyLayerRef.current = L.geoJSON(undefined, {
+          style: { color: "#9B9B9B", weight: 1.25, fillOpacity: 0 },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          onEachFeature: (feature: any, layer: any) => {
+            const p = feature.properties ?? {};
+            const label = p.BASENAME ?? p.NAME;
+            if (label) layer.bindPopup(`${label} County`);
+          },
+        });
+        zipLayerRef.current = L.geoJSON(undefined, {
+          style: { color: "#99454A", weight: 1.5, dashArray: "2,4", fillOpacity: 0 },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          onEachFeature: (feature: any, layer: any) => {
+            const p = feature.properties ?? {};
+            const zip = p.ZCTA5 ?? p.BASENAME;
+            if (zip) layer.bindPopup(`ZIP ${zip}`);
+          },
+        });
+
         mapRef.current.on("baselayerchange", (e: { name: string }) => {
           activeBaseLayerRef.current = e.name;
         });
@@ -645,6 +694,67 @@ export default function SensorMap({
             });
         };
 
+        // Tennessee has a fixed 9 congressional districts — fetch once on
+        // first toggle and keep it cached; no bbox/pan dependency.
+        const loadCongressionalDistricts = () => {
+          if (congressionalLoadedRef.current) return;
+          fetch("/api/boundaries/congressional")
+            .then((res) => (res.ok ? res.json() : null))
+            .then((geojson) => {
+              if (!geojson) return;
+              congressionalLoadedRef.current = true;
+              congressionalLayerRef.current?.clearLayers();
+              congressionalLayerRef.current?.addData(geojson);
+            })
+            .catch(() => {
+              // Best-effort overlay — silently skip on network error.
+            });
+        };
+
+        // Same bbox-on-viewport idiom as loadWindGrid/loadAqiGrid, hitting
+        // the Census Bureau's TIGERweb boundary service instead.
+        const loadCountyLines = () => {
+          if (!mapRef.current) return;
+          const b = mapRef.current.getBounds();
+          const params = new URLSearchParams({
+            south: String(b.getSouth()),
+            west: String(b.getWest()),
+            north: String(b.getNorth()),
+            east: String(b.getEast()),
+          });
+          fetch(`/api/boundaries/county?${params}`)
+            .then((res) => (res.ok ? res.json() : null))
+            .then((geojson) => {
+              if (!geojson) return;
+              countyLayerRef.current?.clearLayers();
+              countyLayerRef.current?.addData(geojson);
+            })
+            .catch(() => {
+              // Best-effort overlay — silently skip on network error.
+            });
+        };
+
+        const loadZipLines = () => {
+          if (!mapRef.current) return;
+          const b = mapRef.current.getBounds();
+          const params = new URLSearchParams({
+            south: String(b.getSouth()),
+            west: String(b.getWest()),
+            north: String(b.getNorth()),
+            east: String(b.getEast()),
+          });
+          fetch(`/api/boundaries/zip?${params}`)
+            .then((res) => (res.ok ? res.json() : null))
+            .then((geojson) => {
+              if (!geojson) return;
+              zipLayerRef.current?.clearLayers();
+              zipLayerRef.current?.addData(geojson);
+            })
+            .catch(() => {
+              // Best-effort overlay — silently skip on network error.
+            });
+        };
+
         mapRef.current.on("overlayadd", (e: { name: string }) => {
           if (e.name === "Wind pattern (area)") {
             windGridActiveRef.current = true;
@@ -653,6 +763,14 @@ export default function SensorMap({
           } else if (e.name === "Air quality (heatmap)") {
             aqiGridActiveRef.current = true;
             loadAqiGrid();
+          } else if (e.name === "Congressional districts (TN)") {
+            loadCongressionalDistricts();
+          } else if (e.name === "County lines") {
+            countyActiveRef.current = true;
+            loadCountyLines();
+          } else if (e.name === "ZIP code lines") {
+            zipActiveRef.current = true;
+            loadZipLines();
           }
         });
         mapRef.current.on("overlayremove", (e: { name: string }) => {
@@ -663,7 +781,13 @@ export default function SensorMap({
           } else if (e.name === "Air quality (heatmap)") {
             aqiGridActiveRef.current = false;
             aqiGridDataRef.current = [];
+          } else if (e.name === "County lines") {
+            countyActiveRef.current = false;
+          } else if (e.name === "ZIP code lines") {
+            zipActiveRef.current = false;
           }
+          // Congressional districts: nothing to reset — the small, fixed TN
+          // dataset stays cached in the layer so toggling back on is instant.
         });
         mapRef.current.on("moveend", () => {
           if (windGridActiveRef.current) {
@@ -673,6 +797,14 @@ export default function SensorMap({
           if (aqiGridActiveRef.current) {
             if (aqiGridDebounceRef.current) clearTimeout(aqiGridDebounceRef.current);
             aqiGridDebounceRef.current = setTimeout(loadAqiGrid, 400);
+          }
+          if (countyActiveRef.current) {
+            if (countyDebounceRef.current) clearTimeout(countyDebounceRef.current);
+            countyDebounceRef.current = setTimeout(loadCountyLines, 400);
+          }
+          if (zipActiveRef.current) {
+            if (zipDebounceRef.current) clearTimeout(zipDebounceRef.current);
+            zipDebounceRef.current = setTimeout(loadZipLines, 400);
           }
         });
 
@@ -688,6 +820,9 @@ export default function SensorMap({
               "Wind (speed + direction)": windLayerRef.current,
               "Wind pattern (area)": windFlowLayerRef.current,
               "Air quality (heatmap)": aqiWashLayerRef.current,
+              "Congressional districts (TN)": congressionalLayerRef.current,
+              "County lines": countyLayerRef.current,
+              "ZIP code lines": zipLayerRef.current,
             },
             { position: "topright", collapsed: true }
           )
