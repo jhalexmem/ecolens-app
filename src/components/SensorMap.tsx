@@ -546,7 +546,7 @@ export default function SensorMap({
               `align-items:center;justify-content:center;width:46px;height:46px;border-radius:50%;` +
               `background:#ffffff;pointer-events:none;">` +
               `<div style="font-size:9px;font-weight:700;line-height:1.1;color:#64748B;letter-spacing:0.03em;">${compass}</div>` +
-              `<div style="font-size:15px;font-weight:700;line-height:1;color:#1D4ED8;">${speed}</div>` +
+              `<div style="font-size:15px;font-weight:700;line-height:1;color:#0047AB;">${speed}</div>` +
               `<div style="font-size:7px;font-weight:600;line-height:1.1;color:#64748B;letter-spacing:0.04em;">MPH</div>` +
               `</div>`,
             iconSize: [46, 46],
