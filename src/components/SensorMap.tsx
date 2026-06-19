@@ -236,15 +236,23 @@ type AqiGridPoint = { lat: number; lng: number; aqi: number };
  * two nearby points that are, say, AQI 38 and AQI 47 — a real, visible
  * difference in air quality — render as the exact same flat green, which is
  * why the heatmap looked like it had "no differing values" even once it had
- * real spatial data behind it. Linear-interpolates between anchor colors at
- * the EPA category breakpoints (and a pale-green anchor at 0, so the very
- * common all-"Good" case still shows texture instead of one flat green).
+ * real spatial data behind it. Linear-interpolates between anchor colors.
+ *
+ * Extra anchors at 25/75 (beyond the plain EPA breakpoints) deliberately
+ * stretch the contrast within 0–100 specifically: real-world CONUS AQI on
+ * any given day clusters almost entirely in 20–60 (confirmed against live
+ * /api/aqi-grid output), so a ramp that only bends color at 0/50/100 spends
+ * most of its range on values that rarely occur. Splitting that span across
+ * green → yellow-green → gold means a 26-vs-59 day reads as a visibly
+ * different green-to-gold gradient instead of two shades of the same green.
  */
 const AQI_COLOR_STOPS: Array<[number, [number, number, number]]> = [
-  [0, [166, 206, 124]], // pale green — pristine air
-  [50, [99, 153, 34]], // green — good (matches --green / aqiHex)
-  [100, [239, 159, 39]], // amber — moderate
-  [150, [216, 90, 48]], // orange — unhealthy for sensitive groups
+  [0, [180, 214, 150]], // pale green — pristine air
+  [25, [140, 196, 80]], // fresh green
+  [50, [223, 199, 45]], // gold-yellow — good/moderate boundary
+  [75, [233, 165, 40]], // amber-orange — deep into moderate
+  [100, [224, 123, 41]], // orange — moderate/USG boundary
+  [150, [216, 90, 48]], // orange-red — unhealthy for sensitive groups
   [200, [226, 75, 74]], // red — unhealthy
   [300, [127, 119, 221]], // purple — very unhealthy
   [500, [153, 60, 29]], // maroon — hazardous
@@ -295,10 +303,12 @@ function createAqiWashLayer(L: any, getPoints: () => AqiGridPoint[]) {
   // Out of 255. Originally set to 18 (~7%) per a "bring this to near zero"
   // request, but that — combined with aqiHex()'s discrete color bands —
   // left the wash effectively invisible: nothing read as different even
-  // when the underlying data wasn't flat. Raised to a level that's still
-  // clearly a subtle tint (not competing with markers/basemap) but where a
-  // real gradient is actually perceptible.
-  const WASH_ALPHA = 60; // ~24%
+  // when the underlying data wasn't flat. Raised once to 60 (~24%); raised
+  // again here to 100 (~39%) alongside the widened 0–100 color contrast
+  // above, since on a low-pollution day the real AQI spread (e.g. 26–59
+  // CONUS-wide) is inherently low-saturation and needs both a bigger color
+  // swing and more opacity to read clearly against the basemap.
+  const WASH_ALPHA = 100; // ~39%
 
   function aqiAt(pts: AqiGridPoint[], lat: number, lng: number): number | null {
     let sumW = 0;
