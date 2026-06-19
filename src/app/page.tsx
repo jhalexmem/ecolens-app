@@ -644,7 +644,7 @@ function PamsCard() {
 
 // ─── Main dashboard ───────────────────────────────────────────────────────────
 
-const DEFAULT_ZIP = "38116"; // South Memphis
+const DEFAULT_ZIP = "38109"; // South Memphis
 
 export default function Home() {
   const [zip, setZip]     = useState("");

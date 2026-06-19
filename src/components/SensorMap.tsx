@@ -87,7 +87,7 @@ function createWindFlowLayer(L: any, getPoints: () => WindGridPoint[]) {
   const PARTICLE_COUNT = 420;
   const WASH_W = 48;
   const WASH_H = 36;
-  const WASH_ALPHA = 195; // out of 255 — reference app's wash reads as a confident, near-opaque tint
+  const WASH_ALPHA = 98; // out of 255 — ~50% more see-through than the original 195
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function windAt(pts: WindGridPoint[], lat: number, lng: number) {
@@ -370,7 +370,10 @@ export default function SensorMap({
         mapRef.current = L.map(containerRef.current, {
           center: allPoints[0] ?? DEFAULT_CENTER,
           zoom: allPoints.length ? 11 : 9,
-          scrollWheelZoom: false,
+          // Scroll-to-zoom while the cursor is over the map, plus Leaflet's
+          // native double-click-to-zoom-in / shift+double-click-to-zoom-out.
+          scrollWheelZoom: true,
+          doubleClickZoom: true,
         });
 
         // ── Selectable base layers (all free, no API key required) ───────────
