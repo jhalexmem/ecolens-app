@@ -113,50 +113,6 @@ img, svg, canvas {
   animation: ecolens-wind-pulse 2.4s ease-in-out infinite;
 }
 
-/* ── Wind speed/flow legend (bottom-left, shown while the area wind layer
-   is active) ──────────────────────────────────────────────────────────── */
-
-.ecolens-wind-legend {
-  background: rgba(255,255,255,0.92);
-  border-radius: var(--radius-md);
-  padding: 8px 10px 7px;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
-  pointer-events: auto;
-}
-
-.ecolens-wind-legend-title {
-  font-size: 10px;
-  font-weight: 700;
-  color: #1a1a18;
-  margin-bottom: 5px;
-  text-align: center;
-}
-
-.ecolens-wind-legend-row {
-  display: flex;
-  align-items: stretch;
-  gap: 5px;
-  height: 70px;
-}
-
-.ecolens-wind-legend-bar {
-  width: 10px;
-  border-radius: 5px;
-  /* Ticks read top(75)→bottom(0); color washes from pale at high speed
-     down to a richer steel blue at calm, matching the wash's own ramp. */
-  background: linear-gradient(to top, #407AAD 0%, #E8F2FA 100%);
-}
-
-.ecolens-wind-legend-ticks {
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  font-size: 9px;
-  color: #5f5e5a;
-  line-height: 1;
-}
-
-.ecolens-wind-wash-canvas,
 .ecolens-wind-flow-canvas,
 .ecolens-aqi-wash-canvas {
   position: absolute;
