@@ -87,7 +87,7 @@ function createWindFlowLayer(L: any, getPoints: () => WindGridPoint[]) {
   const PARTICLE_COUNT = 420;
   const WASH_W = 48;
   const WASH_H = 36;
-  const WASH_ALPHA = 98; // out of 255 — ~50% more see-through than the original 195
+  const WASH_ALPHA = 68; // out of 255 — even more see-through, per follow-up tweak
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function windAt(pts: WindGridPoint[], lat: number, lng: number) {
