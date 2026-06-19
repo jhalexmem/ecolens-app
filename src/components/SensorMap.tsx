@@ -228,11 +228,44 @@ function createWindSourceNote(L: any) {
 
 type AqiGridPoint = { lat: number; lng: number; aqi: number };
 
-/** "#RRGGBB" → [r,g,b] ints — aqiHex() returns CSS hex strings, but canvas
- *  ImageData needs numeric channels. */
-function hexToRgb(hex: string): [number, number, number] {
-  const n = parseInt(hex.replace("#", ""), 16);
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+/**
+ * Continuous AQI → RGB color ramp for the heatmap wash specifically (the
+ * markers keep using the discrete 6-band aqiHex() below — that's correct
+ * for a marker labeled with an official EPA category). The wash needs a
+ * smooth ramp instead: aqiHex() snaps any value to one of 6 flat colors, so
+ * two nearby points that are, say, AQI 38 and AQI 47 — a real, visible
+ * difference in air quality — render as the exact same flat green, which is
+ * why the heatmap looked like it had "no differing values" even once it had
+ * real spatial data behind it. Linear-interpolates between anchor colors at
+ * the EPA category breakpoints (and a pale-green anchor at 0, so the very
+ * common all-"Good" case still shows texture instead of one flat green).
+ */
+const AQI_COLOR_STOPS: Array<[number, [number, number, number]]> = [
+  [0, [166, 206, 124]], // pale green — pristine air
+  [50, [99, 153, 34]], // green — good (matches --green / aqiHex)
+  [100, [239, 159, 39]], // amber — moderate
+  [150, [216, 90, 48]], // orange — unhealthy for sensitive groups
+  [200, [226, 75, 74]], // red — unhealthy
+  [300, [127, 119, 221]], // purple — very unhealthy
+  [500, [153, 60, 29]], // maroon — hazardous
+];
+
+function aqiToWashRgb(aqi: number): [number, number, number] {
+  const stops = AQI_COLOR_STOPS;
+  if (aqi <= stops[0][0]) return stops[0][1];
+  for (let i = 1; i < stops.length; i++) {
+    const [hi, hiRgb] = stops[i];
+    if (aqi <= hi) {
+      const [lo, loRgb] = stops[i - 1];
+      const t = (aqi - lo) / (hi - lo);
+      return [
+        Math.round(loRgb[0] + (hiRgb[0] - loRgb[0]) * t),
+        Math.round(loRgb[1] + (hiRgb[1] - loRgb[1]) * t),
+        Math.round(loRgb[2] + (hiRgb[2] - loRgb[2]) * t),
+      ];
+    }
+  }
+  return stops[stops.length - 1][1];
 }
 
 /**
@@ -249,15 +282,23 @@ function hexToRgb(hex: string): [number, number, number] {
  * the same aqiHex() scale as the markers, so the gradient stays visually
  * consistent with the rest of the dashboard.
  *
- * Kept deliberately very low-opacity (see WASH_ALPHA) — a faint area tint
- * rather than a layer that competes with the markers or basemap, per
- * explicit follow-up feedback to bring this overlay's opacity to near zero.
+ * Kept deliberately low-opacity (see WASH_ALPHA) — a faint area tint rather
+ * than a layer that competes with the markers or basemap — but not so low
+ * that the gradient itself becomes imperceptible; see aqiToWashRgb()'s doc
+ * comment for why a continuous color ramp (not the markers' discrete
+ * aqiHex() bands) is what actually makes the gradient visible at all.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function createAqiWashLayer(L: any, getPoints: () => AqiGridPoint[]) {
   const WASH_W = 48;
   const WASH_H = 36;
-  const WASH_ALPHA = 18; // out of 255 (~7%) — "near zero," per follow-up tweak
+  // Out of 255. Originally set to 18 (~7%) per a "bring this to near zero"
+  // request, but that — combined with aqiHex()'s discrete color bands —
+  // left the wash effectively invisible: nothing read as different even
+  // when the underlying data wasn't flat. Raised to a level that's still
+  // clearly a subtle tint (not competing with markers/basemap) but where a
+  // real gradient is actually perceptible.
+  const WASH_ALPHA = 60; // ~24%
 
   function aqiAt(pts: AqiGridPoint[], lat: number, lng: number): number | null {
     let sumW = 0;
@@ -331,7 +372,7 @@ function createAqiWashLayer(L: any, getPoints: () => AqiGridPoint[]) {
             img.data[idx + 3] = 0;
             continue;
           }
-          const [r, g, b] = hexToRgb(aqiHex(aqi));
+          const [r, g, b] = aqiToWashRgb(aqi);
           img.data[idx] = r;
           img.data[idx + 1] = g;
           img.data[idx + 2] = b;
