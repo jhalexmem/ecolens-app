@@ -221,7 +221,7 @@ function createWindFlowLayer(L: any, getPoints: () => WindGridPoint[]) {
       if (pts.length) {
         // Soft, blurred flecks rather than crisp lines — closer to the
         // reference app's texture than a sharp streamline.
-        ctx.shadowColor = "rgba(255,255,255,0.9)";
+        ctx.shadowColor = "rgba(0,71,171,0.9)";
         ctx.shadowBlur = 2.5;
         for (const particle of this._particles) {
           const latlng = this._map.containerPointToLatLng([particle.x, particle.y]);
@@ -233,7 +233,7 @@ function createWindFlowLayer(L: any, getPoints: () => WindGridPoint[]) {
           const nx = particle.x + vx;
           const ny = particle.y + vy;
 
-          ctx.strokeStyle = "rgba(255,255,255,0.8)";
+          ctx.strokeStyle = "rgba(0,71,171,0.8)";
           ctx.lineWidth = 1.3;
           ctx.beginPath();
           ctx.moveTo(particle.x, particle.y);
