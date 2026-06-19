@@ -161,6 +161,15 @@ img, svg, canvas {
   position: absolute;
   top: 0;
   left: 0;
+  /* Override the global `img, svg, canvas { max-width: 100% }` mobile
+     safety net above — these two canvases are absolutely-positioned
+     children of Leaflet's overlay pane, which has no explicit width
+     (shrink-to-fit). A percentage max-width on a replaced element inside
+     an indeterminate-width container resolves to 0, collapsing the
+     canvas's rendered box to 0x0 even though its backing bitmap is sized
+     and painted correctly. Falling back to the canvas's own width/height
+     attributes (kept in sync with the map size in SensorMap.tsx) fixes it. */
+  max-width: none;
   pointer-events: none;
 }
 
