@@ -113,8 +113,7 @@ img, svg, canvas {
   animation: ecolens-wind-pulse 2.4s ease-in-out infinite;
 }
 
-.ecolens-wind-flow-canvas,
-.ecolens-aqi-wash-canvas {
+.ecolens-wind-flow-canvas {
   position: absolute;
   top: 0;
   left: 0;

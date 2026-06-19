@@ -226,178 +226,6 @@ function createWindSourceNote(L: any) {
   return new WindSourceNote();
 }
 
-type AqiGridPoint = { lat: number; lng: number; aqi: number };
-
-/**
- * Continuous AQI → RGB color ramp for the heatmap wash specifically (the
- * markers keep using the discrete 6-band aqiHex() below — that's correct
- * for a marker labeled with an official EPA category). The wash needs a
- * smooth ramp instead: aqiHex() snaps any value to one of 6 flat colors, so
- * two nearby points that are, say, AQI 38 and AQI 47 — a real, visible
- * difference in air quality — render as the exact same flat green, which is
- * why the heatmap looked like it had "no differing values" even once it had
- * real spatial data behind it. Linear-interpolates between anchor colors.
- *
- * Extra anchors at 25/75 (beyond the plain EPA breakpoints) deliberately
- * stretch the contrast within 0–100 specifically: real-world CONUS AQI on
- * any given day clusters almost entirely in 20–60 (confirmed against live
- * /api/aqi-grid output), so a ramp that only bends color at 0/50/100 spends
- * most of its range on values that rarely occur. Splitting that span across
- * green → yellow-green → gold means a 26-vs-59 day reads as a visibly
- * different green-to-gold gradient instead of two shades of the same green.
- */
-const AQI_COLOR_STOPS: Array<[number, [number, number, number]]> = [
-  [0, [180, 214, 150]], // pale green — pristine air
-  [25, [140, 196, 80]], // fresh green
-  [50, [223, 199, 45]], // gold-yellow — good/moderate boundary
-  [75, [233, 165, 40]], // amber-orange — deep into moderate
-  [100, [224, 123, 41]], // orange — moderate/USG boundary
-  [150, [216, 90, 48]], // orange-red — unhealthy for sensitive groups
-  [200, [226, 75, 74]], // red — unhealthy
-  [300, [127, 119, 221]], // purple — very unhealthy
-  [500, [153, 60, 29]], // maroon — hazardous
-];
-
-function aqiToWashRgb(aqi: number): [number, number, number] {
-  const stops = AQI_COLOR_STOPS;
-  if (aqi <= stops[0][0]) return stops[0][1];
-  for (let i = 1; i < stops.length; i++) {
-    const [hi, hiRgb] = stops[i];
-    if (aqi <= hi) {
-      const [lo, loRgb] = stops[i - 1];
-      const t = (aqi - lo) / (hi - lo);
-      return [
-        Math.round(loRgb[0] + (hiRgb[0] - loRgb[0]) * t),
-        Math.round(loRgb[1] + (hiRgb[1] - loRgb[1]) * t),
-        Math.round(loRgb[2] + (hiRgb[2] - loRgb[2]) * t),
-      ];
-    }
-  }
-  return stops[stops.length - 1][1];
-}
-
-/**
- * Custom Leaflet layer: a soft, gradiented color wash showing the current
- * AQI rating across the map — inverse-distance-weighted interpolation (same
- * approach as the wind wash above) over a combined point set: whichever AQI
- * readings are already on screen (AirNow station, NCore/PAMS site, located
- * PurpleAir sensors) PLUS a denser external grid sampled from Open-Meteo's
- * Air Quality API (see loadAqiGrid). The on-screen readings alone are too
- * sparse and often near-duplicate-valued (the NCore reading is itself
- * sourced from "AirNow's nearest reporting site") to show any real spatial
- * variation, so the external grid supplies actual modeled texture for the
- * gradient to render. Each point reads as its own soft "blob" of color using
- * the same aqiHex() scale as the markers, so the gradient stays visually
- * consistent with the rest of the dashboard.
- *
- * Kept deliberately low-opacity (see WASH_ALPHA) — a faint area tint rather
- * than a layer that competes with the markers or basemap — but not so low
- * that the gradient itself becomes imperceptible; see aqiToWashRgb()'s doc
- * comment for why a continuous color ramp (not the markers' discrete
- * aqiHex() bands) is what actually makes the gradient visible at all.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function createAqiWashLayer(L: any, getPoints: () => AqiGridPoint[]) {
-  const WASH_W = 48;
-  const WASH_H = 36;
-  // Out of 255. Originally set to 18 (~7%) per a "bring this to near zero"
-  // request, but that — combined with aqiHex()'s discrete color bands —
-  // left the wash effectively invisible: nothing read as different even
-  // when the underlying data wasn't flat. Raised once to 60 (~24%); raised
-  // again here to 100 (~39%) alongside the widened 0–100 color contrast
-  // above, since on a low-pollution day the real AQI spread (e.g. 26–59
-  // CONUS-wide) is inherently low-saturation and needs both a bigger color
-  // swing and more opacity to read clearly against the basemap.
-  const WASH_ALPHA = 100; // ~39%
-
-  function aqiAt(pts: AqiGridPoint[], lat: number, lng: number): number | null {
-    let sumW = 0;
-    let sumAqi = 0;
-    for (const p of pts) {
-      const dLat = lat - p.lat;
-      const dLng = lng - p.lng;
-      const distSq = dLat * dLat + dLng * dLng;
-      const w = 1 / Math.max(distSq, 1e-7);
-      sumAqi += p.aqi * w;
-      sumW += w;
-    }
-    if (sumW === 0) return null;
-    return sumAqi / sumW;
-  }
-
-  const AqiWashLayer = L.Layer.extend({
-    onAdd(map: L.Map) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this._map = map as any;
-      this._canvas = L.DomUtil.create("canvas", "ecolens-aqi-wash-canvas");
-      this._ctx = this._canvas.getContext("2d");
-      this._lowCanvas = document.createElement("canvas");
-      this._lowCanvas.width = WASH_W;
-      this._lowCanvas.height = WASH_H;
-      this._lowCtx = this._lowCanvas.getContext("2d");
-
-      map.getPanes().overlayPane.appendChild(this._canvas);
-
-      this._reset = this._reset.bind(this);
-      this.refresh = this.refresh.bind(this);
-
-      map.on("move", this._reset);
-      map.on("resize", this._reset);
-      map.on("moveend", this.refresh);
-
-      this._reset();
-      this.refresh();
-    },
-    onRemove(map: L.Map) {
-      map.off("move", this._reset);
-      map.off("resize", this._reset);
-      map.off("moveend", this.refresh);
-      L.DomUtil.remove(this._canvas);
-    },
-    _reset() {
-      const topLeft = this._map.containerPointToLayerPoint([0, 0]);
-      L.DomUtil.setPosition(this._canvas, topLeft);
-      const size = this._map.getSize();
-      if (this._canvas.width !== size.x || this._canvas.height !== size.y) {
-        this._canvas.width = size.x;
-        this._canvas.height = size.y;
-      }
-    },
-    refresh() {
-      if (!this._map || !this._ctx) return;
-      const size = this._map.getSize();
-      const pts = getPoints();
-      this._ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
-      if (!pts.length) return;
-
-      const img = this._lowCtx.createImageData(WASH_W, WASH_H);
-      for (let j = 0; j < WASH_H; j++) {
-        for (let i = 0; i < WASH_W; i++) {
-          const px = ((i + 0.5) / WASH_W) * size.x;
-          const py = ((j + 0.5) / WASH_H) * size.y;
-          const latlng = this._map.containerPointToLatLng([px, py]);
-          const aqi = aqiAt(pts, latlng.lat, latlng.lng);
-          const idx = (j * WASH_W + i) * 4;
-          if (aqi == null) {
-            img.data[idx + 3] = 0;
-            continue;
-          }
-          const [r, g, b] = aqiToWashRgb(aqi);
-          img.data[idx] = r;
-          img.data[idx + 1] = g;
-          img.data[idx + 2] = b;
-          img.data[idx + 3] = WASH_ALPHA;
-        }
-      }
-      this._lowCtx.putImageData(img, 0, 0);
-      this._ctx.imageSmoothingEnabled = true;
-      this._ctx.drawImage(this._lowCanvas, 0, 0, size.x, size.y);
-    },
-  });
-
-  return new AqiWashLayer();
-}
-
 function aqiHex(aqi: number | null): string {
   if (aqi == null) return "#888780";
   if (aqi <= 50) return "#639922";
@@ -488,17 +316,6 @@ export default function SensorMap({
   // switch to a contrasting yellow over Satellite imagery. Updated via the
   // map's 'baselayerchange' event, fired by the layers control.
   const activeBaseLayerRef = useRef<string>("Street");
-  // AQI gradient-blob overlay — combines whatever AQI readings are already
-  // in props (station, ncoreSite, sensors) with a denser external grid
-  // fetched from Open-Meteo's Air Quality API (see loadAqiGrid below), so
-  // there's enough real spatial variation for the heatmap to show texture
-  // instead of one flat smeared color.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const aqiWashLayerRef = useRef<any>(null);
-  const aqiPointsRef = useRef<AqiGridPoint[]>([]);
-  const aqiGridDataRef = useRef<AqiGridPoint[]>([]);
-  const aqiGridActiveRef = useRef(false);
-  const aqiGridDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Boundary-line overlays (congressional districts, counties, ZIP/ZCTA) —
   // plain L.geoJSON vector outlines, no fill, sourced server-side from the
   // Census Bureau's TIGERweb service (see /api/boundaries/*). Tennessee's 9
@@ -534,19 +351,6 @@ export default function SensorMap({
       const allPoints: [number, number][] = [
         ...(station ? [[station.lat, station.lng] as [number, number]] : []),
         ...located.map((s) => [s.lat as number, s.lng as number] as [number, number]),
-      ];
-
-      // Feed points for the AQI gradient-blob overlay — every reading with a
-      // known AQI and location. Recomputed every effect run so the overlay
-      // (if currently toggled on) stays in sync with fresh data.
-      aqiPointsRef.current = [
-        ...(station && station.aqi != null ? [{ lat: station.lat, lng: station.lng, aqi: station.aqi }] : []),
-        ...(ncoreSite && ncoreSite.aqi != null
-          ? [{ lat: ncoreSite.lat, lng: ncoreSite.lng, aqi: ncoreSite.aqi }]
-          : []),
-        ...located
-          .filter((s) => s.aqi != null)
-          .map((s) => ({ lat: s.lat as number, lng: s.lng as number, aqi: s.aqi as number })),
       ];
 
       if (!mapRef.current) {
@@ -604,24 +408,18 @@ export default function SensorMap({
         );
         windSourceNoteRef.current = createWindSourceNote(L);
 
-        // ── AQI gradient-blob overlay: faint area wash, marker readings +
-        // an external Open-Meteo grid for real spatial variation ──────────
-        aqiWashLayerRef.current = createAqiWashLayer(L, () => [
-          ...aqiPointsRef.current,
-          ...aqiGridDataRef.current,
-        ]);
-
         // ── Boundary-line overlays: plain vector outlines, no fill ───────────
         // Colors match TIGERweb's own default Census renderer for each layer,
         // so they read as "official" and stay visually distinct from the
-        // wind (steel blue flecks) and AQI (green-to-gold wash) overlays.
+        // wind (steel blue flecks) overlay.
         congressionalLayerRef.current = L.geoJSON(undefined, {
           style: { color: "#1E82C3", weight: 2, dashArray: "6,4", fillOpacity: 0 },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           onEachFeature: (feature: any, layer: any) => {
             const p = feature.properties ?? {};
-            const label = p.CD119 ? `TN Congressional District ${p.CD119}` : p.BASENAME ?? p.NAME;
-            if (label) layer.bindPopup(label);
+            // TNMap's own field names: DISTRICT ("1".."9"), NAME (the
+            // sitting representative, e.g. "Representative Steve Cohen").
+            if (p.DISTRICT) layer.bindPopup(`District ${p.DISTRICT}${p.NAME ? ` — ${p.NAME}` : ""}`);
           },
         });
         countyLayerRef.current = L.geoJSON(undefined, {
@@ -669,31 +467,6 @@ export default function SensorMap({
             });
         };
 
-        // Same bbox-grid idiom as loadWindGrid, hitting Open-Meteo's Air
-        // Quality API instead — supplies the real spatial variation the AQI
-        // heatmap can't get from the handful of on-screen marker readings
-        // alone (see createAqiWashLayer's doc comment for why).
-        const loadAqiGrid = () => {
-          if (!mapRef.current) return;
-          const b = mapRef.current.getBounds();
-          const params = new URLSearchParams({
-            south: String(b.getSouth()),
-            west: String(b.getWest()),
-            north: String(b.getNorth()),
-            east: String(b.getEast()),
-          });
-          fetch(`/api/aqi-grid?${params}`)
-            .then((res) => (res.ok ? res.json() : null))
-            .then((data: { points?: Array<{ lat: number; lng: number; aqi: number | null }> } | null) => {
-              if (!data?.points) return;
-              aqiGridDataRef.current = data.points.filter((p): p is AqiGridPoint => p.aqi != null);
-              aqiWashLayerRef.current?.refresh();
-            })
-            .catch(() => {
-              // Best-effort overlay — silently skip on network error.
-            });
-        };
-
         // Tennessee has a fixed 9 congressional districts — fetch once on
         // first toggle and keep it cached; no bbox/pan dependency.
         const loadCongressionalDistricts = () => {
@@ -711,8 +484,8 @@ export default function SensorMap({
             });
         };
 
-        // Same bbox-on-viewport idiom as loadWindGrid/loadAqiGrid, hitting
-        // the Census Bureau's TIGERweb boundary service instead.
+        // Same bbox-on-viewport idiom as loadWindGrid, hitting the Census
+        // Bureau's TIGERweb boundary service instead.
         const loadCountyLines = () => {
           if (!mapRef.current) return;
           const b = mapRef.current.getBounds();
@@ -760,9 +533,6 @@ export default function SensorMap({
             windGridActiveRef.current = true;
             windSourceNoteRef.current?.addTo(mapRef.current);
             loadWindGrid();
-          } else if (e.name === "Air quality (heatmap)") {
-            aqiGridActiveRef.current = true;
-            loadAqiGrid();
           } else if (e.name === "Congressional districts (TN)") {
             loadCongressionalDistricts();
           } else if (e.name === "County lines") {
@@ -778,9 +548,6 @@ export default function SensorMap({
             windGridActiveRef.current = false;
             windGridDataRef.current = [];
             mapRef.current.removeControl(windSourceNoteRef.current);
-          } else if (e.name === "Air quality (heatmap)") {
-            aqiGridActiveRef.current = false;
-            aqiGridDataRef.current = [];
           } else if (e.name === "County lines") {
             countyActiveRef.current = false;
           } else if (e.name === "ZIP code lines") {
@@ -793,10 +560,6 @@ export default function SensorMap({
           if (windGridActiveRef.current) {
             if (windGridDebounceRef.current) clearTimeout(windGridDebounceRef.current);
             windGridDebounceRef.current = setTimeout(loadWindGrid, 400);
-          }
-          if (aqiGridActiveRef.current) {
-            if (aqiGridDebounceRef.current) clearTimeout(aqiGridDebounceRef.current);
-            aqiGridDebounceRef.current = setTimeout(loadAqiGrid, 400);
           }
           if (countyActiveRef.current) {
             if (countyDebounceRef.current) clearTimeout(countyDebounceRef.current);
@@ -819,7 +582,6 @@ export default function SensorMap({
             {
               "Wind (speed + direction)": windLayerRef.current,
               "Wind pattern (area)": windFlowLayerRef.current,
-              "Air quality (heatmap)": aqiWashLayerRef.current,
               "Congressional districts (TN)": congressionalLayerRef.current,
               "County lines": countyLayerRef.current,
               "ZIP code lines": zipLayerRef.current,
@@ -1012,10 +774,6 @@ export default function SensorMap({
 
         markersRef.current.push(marker);
       });
-
-      // Keep the AQI gradient-blob overlay in sync with the freshest
-      // readings — no-ops safely if the layer isn't currently on the map.
-      aqiWashLayerRef.current?.refresh();
 
       const selectedKey = !selected
         ? null
