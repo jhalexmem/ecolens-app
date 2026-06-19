@@ -238,13 +238,16 @@ function hexToRgb(hex: string): [number, number, number] {
 /**
  * Custom Leaflet layer: a soft, gradiented color wash showing the current
  * AQI rating across the map — inverse-distance-weighted interpolation (same
- * approach as the wind wash above) over whichever AQI readings are already
- * on screen (AirNow station, NCore/PAMS site, located PurpleAir sensors).
- * Each reading reads as its own soft "blob" of color using the same
- * aqiHex() scale as the markers, so the gradient stays visually consistent
- * with the rest of the dashboard. No network fetch needed — the data is
- * already available via props, so this just repaints on move/zoom end or
- * whenever the underlying readings change.
+ * approach as the wind wash above) over a combined point set: whichever AQI
+ * readings are already on screen (AirNow station, NCore/PAMS site, located
+ * PurpleAir sensors) PLUS a denser external grid sampled from Open-Meteo's
+ * Air Quality API (see loadAqiGrid). The on-screen readings alone are too
+ * sparse and often near-duplicate-valued (the NCore reading is itself
+ * sourced from "AirNow's nearest reporting site") to show any real spatial
+ * variation, so the external grid supplies actual modeled texture for the
+ * gradient to render. Each point reads as its own soft "blob" of color using
+ * the same aqiHex() scale as the markers, so the gradient stays visually
+ * consistent with the rest of the dashboard.
  *
  * Kept deliberately very low-opacity (see WASH_ALPHA) — a faint area tint
  * rather than a layer that competes with the markers or basemap, per
@@ -434,12 +437,17 @@ export default function SensorMap({
   // switch to a contrasting yellow over Satellite imagery. Updated via the
   // map's 'baselayerchange' event, fired by the layers control.
   const activeBaseLayerRef = useRef<string>("Street");
-  // AQI gradient-blob overlay — interpolated client-side from whatever AQI
-  // readings are already in props (station, ncoreSite, sensors), so unlike
-  // the wind overlays it needs no network fetch of its own.
+  // AQI gradient-blob overlay — combines whatever AQI readings are already
+  // in props (station, ncoreSite, sensors) with a denser external grid
+  // fetched from Open-Meteo's Air Quality API (see loadAqiGrid below), so
+  // there's enough real spatial variation for the heatmap to show texture
+  // instead of one flat smeared color.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const aqiWashLayerRef = useRef<any>(null);
   const aqiPointsRef = useRef<AqiGridPoint[]>([]);
+  const aqiGridDataRef = useRef<AqiGridPoint[]>([]);
+  const aqiGridActiveRef = useRef(false);
+  const aqiGridDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // True once the one-time "fit to all known points" has run (page load /
   // refresh). After that, selection changes pan to the selected point
   // instead of re-fitting the whole metro area.
@@ -524,12 +532,16 @@ export default function SensorMap({
         windFlowLayerRef.current = createWindFlowLayer(L, () => windGridDataRef.current, () =>
           activeBaseLayerRef.current === "Satellite"
             ? { stroke: "rgba(255,214,10,0.9)", shadow: "rgba(255,214,10,0.95)" } // contrasting yellow
-            : { stroke: "rgba(0,71,171,0.8)", shadow: "rgba(0,71,171,0.9)" } // default steel blue
+            : { stroke: "rgba(0,71,171,0.6)", shadow: "rgba(0,71,171,0.675)" } // default steel blue, ~25% less prominent
         );
         windSourceNoteRef.current = createWindSourceNote(L);
 
-        // ── AQI gradient-blob overlay: faint area wash, no fetch needed ─────
-        aqiWashLayerRef.current = createAqiWashLayer(L, () => aqiPointsRef.current);
+        // ── AQI gradient-blob overlay: faint area wash, marker readings +
+        // an external Open-Meteo grid for real spatial variation ──────────
+        aqiWashLayerRef.current = createAqiWashLayer(L, () => [
+          ...aqiPointsRef.current,
+          ...aqiGridDataRef.current,
+        ]);
 
         mapRef.current.on("baselayerchange", (e: { name: string }) => {
           activeBaseLayerRef.current = e.name;
@@ -557,22 +569,60 @@ export default function SensorMap({
             });
         };
 
+        // Same bbox-grid idiom as loadWindGrid, hitting Open-Meteo's Air
+        // Quality API instead — supplies the real spatial variation the AQI
+        // heatmap can't get from the handful of on-screen marker readings
+        // alone (see createAqiWashLayer's doc comment for why).
+        const loadAqiGrid = () => {
+          if (!mapRef.current) return;
+          const b = mapRef.current.getBounds();
+          const params = new URLSearchParams({
+            south: String(b.getSouth()),
+            west: String(b.getWest()),
+            north: String(b.getNorth()),
+            east: String(b.getEast()),
+          });
+          fetch(`/api/aqi-grid?${params}`)
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data: { points?: Array<{ lat: number; lng: number; aqi: number | null }> } | null) => {
+              if (!data?.points) return;
+              aqiGridDataRef.current = data.points.filter((p): p is AqiGridPoint => p.aqi != null);
+              aqiWashLayerRef.current?.refresh();
+            })
+            .catch(() => {
+              // Best-effort overlay — silently skip on network error.
+            });
+        };
+
         mapRef.current.on("overlayadd", (e: { name: string }) => {
-          if (e.name !== "Wind pattern (area)") return;
-          windGridActiveRef.current = true;
-          windSourceNoteRef.current?.addTo(mapRef.current);
-          loadWindGrid();
+          if (e.name === "Wind pattern (area)") {
+            windGridActiveRef.current = true;
+            windSourceNoteRef.current?.addTo(mapRef.current);
+            loadWindGrid();
+          } else if (e.name === "Air quality (heatmap)") {
+            aqiGridActiveRef.current = true;
+            loadAqiGrid();
+          }
         });
         mapRef.current.on("overlayremove", (e: { name: string }) => {
-          if (e.name !== "Wind pattern (area)") return;
-          windGridActiveRef.current = false;
-          windGridDataRef.current = [];
-          mapRef.current.removeControl(windSourceNoteRef.current);
+          if (e.name === "Wind pattern (area)") {
+            windGridActiveRef.current = false;
+            windGridDataRef.current = [];
+            mapRef.current.removeControl(windSourceNoteRef.current);
+          } else if (e.name === "Air quality (heatmap)") {
+            aqiGridActiveRef.current = false;
+            aqiGridDataRef.current = [];
+          }
         });
         mapRef.current.on("moveend", () => {
-          if (!windGridActiveRef.current) return;
-          if (windGridDebounceRef.current) clearTimeout(windGridDebounceRef.current);
-          windGridDebounceRef.current = setTimeout(loadWindGrid, 400);
+          if (windGridActiveRef.current) {
+            if (windGridDebounceRef.current) clearTimeout(windGridDebounceRef.current);
+            windGridDebounceRef.current = setTimeout(loadWindGrid, 400);
+          }
+          if (aqiGridActiveRef.current) {
+            if (aqiGridDebounceRef.current) clearTimeout(aqiGridDebounceRef.current);
+            aqiGridDebounceRef.current = setTimeout(loadAqiGrid, 400);
+          }
         });
 
         L.control
