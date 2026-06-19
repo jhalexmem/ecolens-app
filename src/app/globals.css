@@ -157,20 +157,44 @@ img, svg, canvas {
 }
 
 .ecolens-wind-wash-canvas,
-.ecolens-wind-flow-canvas {
+.ecolens-wind-flow-canvas,
+.ecolens-aqi-wash-canvas {
   position: absolute;
   top: 0;
   left: 0;
   /* Override the global `img, svg, canvas { max-width: 100% }` mobile
-     safety net above — these two canvases are absolutely-positioned
-     children of Leaflet's overlay pane, which has no explicit width
-     (shrink-to-fit). A percentage max-width on a replaced element inside
-     an indeterminate-width container resolves to 0, collapsing the
-     canvas's rendered box to 0x0 even though its backing bitmap is sized
-     and painted correctly. Falling back to the canvas's own width/height
-     attributes (kept in sync with the map size in SensorMap.tsx) fixes it. */
+     safety net above — these canvases are absolutely-positioned children
+     of Leaflet's overlay pane, which has no explicit width (shrink-to-fit).
+     A percentage max-width on a replaced element inside an indeterminate-
+     width container resolves to 0, collapsing the canvas's rendered box to
+     0x0 even though its backing bitmap is sized and painted correctly.
+     Falling back to the canvas's own width/height attributes (kept in sync
+     with the map size in SensorMap.tsx) fixes it. */
   max-width: none;
   pointer-events: none;
+}
+
+/* ── Area-wind data-source note (bottom-right, shown alongside the wind
+   legend while the area wind layer is active) ──────────────────────────── */
+
+.ecolens-wind-source {
+  background: rgba(255,255,255,0.92);
+  border-radius: var(--radius-md);
+  padding: 5px 9px;
+  font-size: 10px;
+  color: #5f5e5a;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+  pointer-events: auto;
+}
+
+.ecolens-wind-source a {
+  color: #0047AB;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.ecolens-wind-source a:hover {
+  text-decoration: underline;
 }
 
 /* ── Map control layout ───────────────────────────────────────────────── */

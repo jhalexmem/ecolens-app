@@ -81,9 +81,18 @@ function degToCompass(deg: number): string {
  * canvas (particle trails, repainted every animation frame). Both are kept
  * pinned to the viewport on every 'move' event so they track the map
  * without needing to be redrawn every pixel of a drag.
+ *
+ * getFleckColors() is read fresh every animation frame rather than baked in
+ * once, so the particle color can react live to which base layer is active
+ * (contrasting yellow over Satellite imagery, the default steel blue
+ * elsewhere) without tearing down and recreating the layer.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function createWindFlowLayer(L: any, getPoints: () => WindGridPoint[]) {
+function createWindFlowLayer(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  L: any,
+  getPoints: () => WindGridPoint[],
+  getFleckColors: () => { stroke: string; shadow: string }
+) {
   const PARTICLE_COUNT = 420;
   const WASH_W = 48;
   const WASH_H = 36;
@@ -220,8 +229,11 @@ function createWindFlowLayer(L: any, getPoints: () => WindGridPoint[]) {
       const pts = getPoints();
       if (pts.length) {
         // Soft, blurred flecks rather than crisp lines — closer to the
-        // reference app's texture than a sharp streamline.
-        ctx.shadowColor = "rgba(0,71,171,0.9)";
+        // reference app's texture than a sharp streamline. Color swaps to a
+        // contrasting yellow over the Satellite basemap (steel blue reads
+        // poorly against true-color imagery); see getFleckColors().
+        const { stroke, shadow } = getFleckColors();
+        ctx.shadowColor = shadow;
         ctx.shadowBlur = 2.5;
         for (const particle of this._particles) {
           const latlng = this._map.containerPointToLatLng([particle.x, particle.y]);
@@ -233,7 +245,7 @@ function createWindFlowLayer(L: any, getPoints: () => WindGridPoint[]) {
           const nx = particle.x + vx;
           const ny = particle.y + vy;
 
-          ctx.strokeStyle = "rgba(0,71,171,0.8)";
+          ctx.strokeStyle = stroke;
           ctx.lineWidth = 1.3;
           ctx.beginPath();
           ctx.moveTo(particle.x, particle.y);
@@ -280,6 +292,142 @@ function createWindLegend(L: any) {
     },
   });
   return new WindLegend();
+}
+
+/** Small attribution note (bottom-right), shown alongside the wind legend
+ *  while the area wind overlay is active — cites the actual upstream
+ *  provider (Open-Meteo) behind both wind overlays' data. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createWindSourceNote(L: any) {
+  const WindSourceNote = L.Control.extend({
+    options: { position: "bottomright" },
+    onAdd() {
+      const div = L.DomUtil.create("div", "ecolens-wind-source");
+      div.innerHTML =
+        `Area wind data: <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open-Meteo</a>`;
+      L.DomEvent.disableClickPropagation(div);
+      return div;
+    },
+  });
+  return new WindSourceNote();
+}
+
+type AqiGridPoint = { lat: number; lng: number; aqi: number };
+
+/** "#RRGGBB" → [r,g,b] ints — aqiHex() returns CSS hex strings, but canvas
+ *  ImageData needs numeric channels. */
+function hexToRgb(hex: string): [number, number, number] {
+  const n = parseInt(hex.replace("#", ""), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/**
+ * Custom Leaflet layer: a soft, gradiented color wash showing the current
+ * AQI rating across the map — inverse-distance-weighted interpolation (same
+ * approach as the wind wash above) over whichever AQI readings are already
+ * on screen (AirNow station, NCore/PAMS site, located PurpleAir sensors).
+ * Each reading reads as its own soft "blob" of color using the same
+ * aqiHex() scale as the markers, so the gradient stays visually consistent
+ * with the rest of the dashboard. No network fetch needed — the data is
+ * already available via props, so this just repaints on move/zoom end or
+ * whenever the underlying readings change.
+ *
+ * Kept deliberately very low-opacity (see WASH_ALPHA) — a faint area tint
+ * rather than a layer that competes with the markers or basemap, per
+ * explicit follow-up feedback to bring this overlay's opacity to near zero.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createAqiWashLayer(L: any, getPoints: () => AqiGridPoint[]) {
+  const WASH_W = 48;
+  const WASH_H = 36;
+  const WASH_ALPHA = 18; // out of 255 (~7%) — "near zero," per follow-up tweak
+
+  function aqiAt(pts: AqiGridPoint[], lat: number, lng: number): number | null {
+    let sumW = 0;
+    let sumAqi = 0;
+    for (const p of pts) {
+      const dLat = lat - p.lat;
+      const dLng = lng - p.lng;
+      const distSq = dLat * dLat + dLng * dLng;
+      const w = 1 / Math.max(distSq, 1e-7);
+      sumAqi += p.aqi * w;
+      sumW += w;
+    }
+    if (sumW === 0) return null;
+    return sumAqi / sumW;
+  }
+
+  const AqiWashLayer = L.Layer.extend({
+    onAdd(map: L.Map) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      this._map = map as any;
+      this._canvas = L.DomUtil.create("canvas", "ecolens-aqi-wash-canvas");
+      this._ctx = this._canvas.getContext("2d");
+      this._lowCanvas = document.createElement("canvas");
+      this._lowCanvas.width = WASH_W;
+      this._lowCanvas.height = WASH_H;
+      this._lowCtx = this._lowCanvas.getContext("2d");
+
+      map.getPanes().overlayPane.appendChild(this._canvas);
+
+      this._reset = this._reset.bind(this);
+      this.refresh = this.refresh.bind(this);
+
+      map.on("move", this._reset);
+      map.on("resize", this._reset);
+      map.on("moveend", this.refresh);
+
+      this._reset();
+      this.refresh();
+    },
+    onRemove(map: L.Map) {
+      map.off("move", this._reset);
+      map.off("resize", this._reset);
+      map.off("moveend", this.refresh);
+      L.DomUtil.remove(this._canvas);
+    },
+    _reset() {
+      const topLeft = this._map.containerPointToLayerPoint([0, 0]);
+      L.DomUtil.setPosition(this._canvas, topLeft);
+      const size = this._map.getSize();
+      if (this._canvas.width !== size.x || this._canvas.height !== size.y) {
+        this._canvas.width = size.x;
+        this._canvas.height = size.y;
+      }
+    },
+    refresh() {
+      if (!this._map || !this._ctx) return;
+      const size = this._map.getSize();
+      const pts = getPoints();
+      this._ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
+      if (!pts.length) return;
+
+      const img = this._lowCtx.createImageData(WASH_W, WASH_H);
+      for (let j = 0; j < WASH_H; j++) {
+        for (let i = 0; i < WASH_W; i++) {
+          const px = ((i + 0.5) / WASH_W) * size.x;
+          const py = ((j + 0.5) / WASH_H) * size.y;
+          const latlng = this._map.containerPointToLatLng([px, py]);
+          const aqi = aqiAt(pts, latlng.lat, latlng.lng);
+          const idx = (j * WASH_W + i) * 4;
+          if (aqi == null) {
+            img.data[idx + 3] = 0;
+            continue;
+          }
+          const [r, g, b] = hexToRgb(aqiHex(aqi));
+          img.data[idx] = r;
+          img.data[idx + 1] = g;
+          img.data[idx + 2] = b;
+          img.data[idx + 3] = WASH_ALPHA;
+        }
+      }
+      this._lowCtx.putImageData(img, 0, 0);
+      this._ctx.imageSmoothingEnabled = true;
+      this._ctx.drawImage(this._lowCanvas, 0, 0, size.x, size.y);
+    },
+  });
+
+  return new AqiWashLayer();
 }
 
 function aqiHex(aqi: number | null): string {
@@ -365,8 +513,21 @@ export default function SensorMap({
   const windGridDataRef = useRef<WindGridPoint[]>([]);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const windLegendRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const windSourceNoteRef = useRef<any>(null);
   const windGridActiveRef = useRef(false);
   const windGridDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Name of the currently-active base tile layer ("Street", "Satellite",
+  // etc.) — read live by the wind-flow particle animation so flecks can
+  // switch to a contrasting yellow over Satellite imagery. Updated via the
+  // map's 'baselayerchange' event, fired by the layers control.
+  const activeBaseLayerRef = useRef<string>("Street");
+  // AQI gradient-blob overlay — interpolated client-side from whatever AQI
+  // readings are already in props (station, ncoreSite, sensors), so unlike
+  // the wind overlays it needs no network fetch of its own.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const aqiWashLayerRef = useRef<any>(null);
+  const aqiPointsRef = useRef<AqiGridPoint[]>([]);
   // True once the one-time "fit to all known points" has run (page load /
   // refresh). After that, selection changes pan to the selected point
   // instead of re-fitting the whole metro area.
@@ -385,6 +546,19 @@ export default function SensorMap({
       const allPoints: [number, number][] = [
         ...(station ? [[station.lat, station.lng] as [number, number]] : []),
         ...located.map((s) => [s.lat as number, s.lng as number] as [number, number]),
+      ];
+
+      // Feed points for the AQI gradient-blob overlay — every reading with a
+      // known AQI and location. Recomputed every effect run so the overlay
+      // (if currently toggled on) stays in sync with fresh data.
+      aqiPointsRef.current = [
+        ...(station && station.aqi != null ? [{ lat: station.lat, lng: station.lng, aqi: station.aqi }] : []),
+        ...(ncoreSite && ncoreSite.aqi != null
+          ? [{ lat: ncoreSite.lat, lng: ncoreSite.lng, aqi: ncoreSite.aqi }]
+          : []),
+        ...located
+          .filter((s) => s.aqi != null)
+          .map((s) => ({ lat: s.lat as number, lng: s.lng as number, aqi: s.aqi as number })),
       ];
 
       if (!mapRef.current) {
@@ -435,8 +609,20 @@ export default function SensorMap({
         // triggers a network fetch. The layers control adds/removes it from
         // the map when the user toggles its checkbox, which fires the
         // overlayadd/overlayremove events handled below.
-        windFlowLayerRef.current = createWindFlowLayer(L, () => windGridDataRef.current);
+        windFlowLayerRef.current = createWindFlowLayer(L, () => windGridDataRef.current, () =>
+          activeBaseLayerRef.current === "Satellite"
+            ? { stroke: "rgba(255,214,10,0.9)", shadow: "rgba(255,214,10,0.95)" } // contrasting yellow
+            : { stroke: "rgba(0,71,171,0.8)", shadow: "rgba(0,71,171,0.9)" } // default steel blue
+        );
         windLegendRef.current = createWindLegend(L);
+        windSourceNoteRef.current = createWindSourceNote(L);
+
+        // ── AQI gradient-blob overlay: faint area wash, no fetch needed ─────
+        aqiWashLayerRef.current = createAqiWashLayer(L, () => aqiPointsRef.current);
+
+        mapRef.current.on("baselayerchange", (e: { name: string }) => {
+          activeBaseLayerRef.current = e.name;
+        });
 
         const loadWindGrid = () => {
           if (!mapRef.current) return;
@@ -465,6 +651,7 @@ export default function SensorMap({
           if (e.name !== "Wind pattern (area)") return;
           windGridActiveRef.current = true;
           windLegendRef.current?.addTo(mapRef.current);
+          windSourceNoteRef.current?.addTo(mapRef.current);
           loadWindGrid();
         });
         mapRef.current.on("overlayremove", (e: { name: string }) => {
@@ -473,6 +660,7 @@ export default function SensorMap({
           windGridDataRef.current = [];
           windFlowLayerRef.current?.refreshWash();
           mapRef.current.removeControl(windLegendRef.current);
+          mapRef.current.removeControl(windSourceNoteRef.current);
         });
         mapRef.current.on("moveend", () => {
           if (!windGridActiveRef.current) return;
@@ -491,6 +679,7 @@ export default function SensorMap({
             {
               "Wind (speed + direction)": windLayerRef.current,
               "Wind pattern (area)": windFlowLayerRef.current,
+              "Air quality (heatmap)": aqiWashLayerRef.current,
             },
             { position: "topright", collapsed: true }
           )
@@ -680,6 +869,10 @@ export default function SensorMap({
 
         markersRef.current.push(marker);
       });
+
+      // Keep the AQI gradient-blob overlay in sync with the freshest
+      // readings — no-ops safely if the layer isn't currently on the map.
+      aqiWashLayerRef.current?.refresh();
 
       const selectedKey = !selected
         ? null
