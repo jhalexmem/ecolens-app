@@ -315,15 +315,36 @@ export interface StationPoint {
   wind_direction_deg: number | null;
 }
 
+/**
+ * The fixed Shelby Farms Park reference site — one physical location
+ * hosting both the NCore (since 2009) and PAMS (since 2021) monitoring
+ * programs. Always rendered on the map regardless of the searched zip;
+ * the live numbers here are best-effort (nearest AirNow station + Open-
+ * Meteo), not a guaranteed exact match to the NCore monitor's own feed.
+ */
+export interface NcoreSitePoint {
+  name: string;
+  lat: number;
+  lng: number;
+  aqi: number | null;
+  aqi_category: string | null;
+  pm25: number | null;
+  fetched_at: string;
+  wind_speed_mph: number | null;
+  wind_direction_deg: number | null;
+}
+
 export default function SensorMap({
   sensors,
   station,
+  ncoreSite,
   selected,
   onSelect,
   addresses,
 }: {
   sensors: SensorReading[];
   station?: StationPoint;
+  ncoreSite?: NcoreSitePoint;
   selected?: SourceSelection;
   onSelect?: (sel: SourceSelection) => void;
   addresses?: Record<string, string | null>;
@@ -560,6 +581,74 @@ export default function SensorMap({
         }
       }
 
+      // ── NCore/PAMS reference site (Shelby Farms Park) ───────────────────
+      // Always rendered, independent of the searched zip — one physical
+      // EPA site hosts both the NCore (since 2009) and PAMS (since 2021)
+      // programs, so this is a single marker rather than two. Distinct
+      // "lab flask" icon to read as a reference/official site at a glance,
+      // separate from the searched-zip diamond and the PurpleAir circles.
+      if (ncoreSite) {
+        const isSelected = selected?.kind === "ncore";
+        const color = aqiHex(ncoreSite.aqi);
+        const size = isSelected ? 30 : 24;
+        const normalBorder = isSelected ? `4px solid ${HIGHLIGHT}` : `3px solid ${color}`;
+        const hoverBorder = `4px solid ${HIGHLIGHT}`;
+        const icon = L.divIcon({
+          className: "",
+          html:
+            `<div style="width:${size}px;height:${size}px;background:#fff;` +
+            `border:${normalBorder};border-radius:8px;` +
+            `box-shadow:0 1px 4px rgba(0,0,0,0.45);display:flex;` +
+            `align-items:center;justify-content:center;font-size:${Math.round(size * 0.58)}px;` +
+            `line-height:1;">🧪</div>`,
+          iconSize: [size, size],
+          iconAnchor: [size / 2, size / 2],
+        });
+
+        const marker = L.marker([ncoreSite.lat, ncoreSite.lng], {
+          icon,
+          zIndexOffset: isSelected ? 1000 : 500,
+        }).addTo(mapRef.current);
+
+        const ncoreAddress = addresses?.ncore;
+        marker.bindPopup(
+          `<strong>${escapeHtml(ncoreSite.name)} — NCore / PAMS</strong><br/>` +
+            `One EPA site, two monitoring programs: NCore (criteria pollutants, ` +
+            `since 2009) and PAMS (speciated VOCs/carbonyls, since 2021).<br/>` +
+            (ncoreAddress ? `${escapeHtml(ncoreAddress)}<br/>` : "") +
+            `<em>Pin location is approximate (Shelby Farms Park, general ` +
+            `coordinates) — the monitor shed's exact address isn't yet ` +
+            `confirmed. Reading below is via AirNow's nearest reporting ` +
+            `site, not a guaranteed exact monitor match.</em><br/>` +
+            `AQI ${ncoreSite.aqi ?? "—"}${ncoreSite.aqi_category ? ` (${ncoreSite.aqi_category})` : ""}<br/>` +
+            `PM2.5: ${ncoreSite.pm25 != null ? ncoreSite.pm25.toFixed(1) : "—"} µg/m³<br/>` +
+            (ncoreSite.wind_speed_mph != null
+              ? `Wind: ${Math.round(ncoreSite.wind_speed_mph)} mph${
+                  ncoreSite.wind_direction_deg != null ? ` from ${Math.round(ncoreSite.wind_direction_deg)}°` : ""
+                }<br/>`
+              : "") +
+            `Archival speciated PAMS data: see the PAMS card on the dashboard ` +
+            `once EPA AQS access is confirmed.<br/>` +
+            `Updated ${new Date(ncoreSite.fetched_at).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            })}<br/>` +
+            mapLinksHtml(ncoreSite.lat, ncoreSite.lng)
+        );
+
+        marker.on("click", () => onSelect?.({ kind: "ncore" }));
+        marker.on("mouseover", () => {
+          const inner = marker.getElement()?.firstElementChild as HTMLElement | null;
+          if (inner) inner.style.border = hoverBorder;
+        });
+        marker.on("mouseout", () => {
+          const inner = marker.getElement()?.firstElementChild as HTMLElement | null;
+          if (inner) inner.style.border = normalBorder;
+        });
+
+        markersRef.current.push(marker);
+      }
+
       // ── Portable PurpleAir sensors (circle markers) ─────────────────────
       located.forEach((s) => {
         const isSelected = selected?.kind === "sensor" && selected.sensor_index === s.sensor_index;
@@ -596,6 +685,8 @@ export default function SensorMap({
         ? null
         : selected.kind === "station"
         ? "station"
+        : selected.kind === "ncore"
+        ? "ncore"
         : `sensor:${selected.sensor_index}`;
 
       // On the very first load (or a hard page refresh), fit the view to
@@ -619,6 +710,10 @@ export default function SensorMap({
             ? station
               ? ([station.lat, station.lng] as [number, number])
               : null
+            : sel.kind === "ncore"
+            ? ncoreSite
+              ? ([ncoreSite.lat, ncoreSite.lng] as [number, number])
+              : null
             : (() => {
                 const s = located.find((s) => s.sensor_index === sel.sensor_index);
                 return s ? ([s.lat as number, s.lng as number] as [number, number]) : null;
@@ -631,7 +726,7 @@ export default function SensorMap({
     return () => {
       cancelled = true;
     };
-  }, [sensors, station, selected, onSelect, addresses]);
+  }, [sensors, station, ncoreSite, selected, onSelect, addresses]);
 
   // Tear the map down completely on unmount (e.g. fast refresh / nav away)
   useEffect(() => {

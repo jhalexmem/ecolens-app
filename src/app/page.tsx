@@ -11,7 +11,7 @@ import type {
   GeocodeResponse,
   PamsResponse,
 } from "@/types/ecolens";
-import SensorMap, { type StationPoint } from "@/components/SensorMap";
+import SensorMap, { type StationPoint, type NcoreSitePoint } from "@/components/SensorMap";
 
 // ─── AQI helpers ─────────────────────────────────────────────────────────────
 
@@ -177,9 +177,13 @@ function sensorToSelectedReading(
   };
 }
 
-// What feeds the trend chart — either the AirNow zip-code station or a
-// specific PurpleAir sensor's own history.
-type TrendSource = { kind: "station"; zip: string } | { kind: "sensor"; sensorIndex: string };
+// What feeds the trend chart — either the AirNow zip-code station, a
+// specific PurpleAir sensor's own history, or the fixed NCore/PAMS
+// reference site (which has no history endpoint yet).
+type TrendSource =
+  | { kind: "station"; zip: string }
+  | { kind: "sensor"; sensorIndex: string }
+  | { kind: "ncore" };
 
 // ─── Gauge arc ───────────────────────────────────────────────────────────────
 
@@ -312,6 +316,13 @@ function TrendChart({ source }: { source: TrendSource }) {
   const [points, setPoints] = useState<{ label: string; aqi: number | null }[]>([]);
 
   useEffect(() => {
+    if (source.kind === "ncore") {
+      // No history endpoint for the fixed reference site yet — clear any
+      // stale points from a previously-selected source.
+      setPoints([]);
+      return;
+    }
+
     const url =
       source.kind === "station"
         ? `/api/history?zip=${source.zip}&hours=24`
@@ -328,7 +339,7 @@ function TrendChart({ source }: { source: TrendSource }) {
       })
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source.kind, source.kind === "station" ? source.zip : source.sensorIndex]);
+  }, [source.kind, source.kind === "station" ? source.zip : source.kind === "sensor" ? source.sensorIndex : null]);
 
   useEffect(() => {
     if (!points.length || !canvasRef.current) return;
@@ -405,8 +416,10 @@ function TrendChart({ source }: { source: TrendSource }) {
 
   if (!points.length) {
     return (
-      <div style={{ height: 180, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: 13 }}>
-        History builds up as you use EcoLens — check back after a few refreshes.
+      <div style={{ height: 180, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: 13, textAlign: "center", padding: "0 12px" }}>
+        {source.kind === "ncore"
+          ? "Historical trend isn't tracked for this fixed reference site yet."
+          : "History builds up as you use EcoLens — check back after a few refreshes."}
       </div>
     );
   }
@@ -464,6 +477,7 @@ function AllSensorsCard({
   selected,
   onSelect,
   addresses,
+  ncoreReading,
 }: {
   reading: AirQualityReading;
   sensors: SensorReading[];
@@ -473,6 +487,7 @@ function AllSensorsCard({
   selected: SourceSelection;
   onSelect: (sel: SourceSelection) => void;
   addresses: Record<string, string | null>;
+  ncoreReading: AirQualityReading | null;
 }) {
   // The official EPA AirNow reading, reshaped into a map point. Memoized so
   // SensorMap's effect doesn't redraw the whole map on every parent re-render.
@@ -490,6 +505,27 @@ function AllSensorsCard({
     wind_direction_deg: reading.wind_direction_deg,
   }), [reading]);
 
+  // The fixed Shelby Farms NCore/PAMS reference site, reshaped into a map
+  // point. Always shown once /api/ncore resolves, independent of the
+  // searched zip — see SensorMap's marker block for the honesty caveats
+  // around the "nearest AirNow station" reading.
+  const ncoreSite: NcoreSitePoint | undefined = useMemo(() => {
+    if (!ncoreReading) return undefined;
+    return {
+      name: "Shelby Farms Park — NCore / PAMS Site",
+      lat: ncoreReading.location.lat,
+      lng: ncoreReading.location.lng,
+      aqi: ncoreReading.aqi,
+      aqi_category: ncoreReading.aqi_category,
+      pm25: ncoreReading.pm25,
+      fetched_at: ncoreReading.fetched_at,
+      wind_speed_mph: ncoreReading.wind_speed_mph,
+      wind_direction_deg: ncoreReading.wind_direction_deg,
+    };
+  }, [ncoreReading]);
+
+  const hasComparison = sensors.length > 0 || !!ncoreReading;
+
   return (
     <div style={{
       background: "var(--card-bg)", border: "0.5px solid var(--border)",
@@ -498,7 +534,7 @@ function AllSensorsCard({
     }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
         <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          Live sensor map {`(EPA AirNow${sensors.length > 0 ? ` + ${sensors.length} PurpleAir` : ""})`}
+          Live sensor map {`(EPA AirNow${ncoreReading ? " + NCore/PAMS" : ""}${sensors.length > 0 ? ` + ${sensors.length} PurpleAir` : ""})`}
           {" · click a marker or chip to view its data below"}
         </div>
         {loaded && sensors.length > 0 && (
@@ -511,12 +547,13 @@ function AllSensorsCard({
       <SensorMap
         sensors={sensors}
         station={station}
+        ncoreSite={ncoreSite}
         selected={selected}
         onSelect={onSelect}
         addresses={addresses}
       />
 
-      {sensors.length > 0 ? (
+      {hasComparison ? (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
           <SourceChip
             label="EPA AirNow"
@@ -526,6 +563,16 @@ function AllSensorsCard({
             onClick={() => onSelect({ kind: "station" })}
             address={addresses.station}
           />
+          {ncoreReading && (
+            <SourceChip
+              label="NCore / PAMS"
+              aqi={ncoreReading.aqi}
+              sub="Shelby Farms"
+              selected={selected.kind === "ncore"}
+              onClick={() => onSelect({ kind: "ncore" })}
+              address={addresses.ncore}
+            />
+          )}
           {sensors.map((s) => (
             <SourceChip
               key={s.sensor_index}
@@ -666,11 +713,18 @@ export default function Home() {
   // default, or whichever map marker / chip the user last clicked.
   const [selected, setSelected] = useState<SourceSelection>({ kind: "station" });
 
-  // Reverse-geocoded street addresses, keyed by "station" or sensor_index.
-  // Populated lazily — see the two effects below.
+  // Reverse-geocoded street addresses, keyed by "station", "ncore", or
+  // sensor_index. Populated lazily — see the effects below.
   const [addresses, setAddresses] = useState<Record<string, string | null>>({});
   const fetchedStationKey = useRef<string | null>(null);
   const fetchedSensorKeys = useRef<Set<string>>(new Set());
+
+  // Fixed Shelby Farms NCore/PAMS reference site — independent of whatever
+  // zip is searched. See lib/ncore.ts: this always resolves to a reading
+  // (never throws), so the map marker can be placed even when AirNow's
+  // nearest-station lookup or Open-Meteo comes back empty.
+  const [ncoreReading, setNcoreReading] = useState<AirQualityReading | null>(null);
+  const fetchedNcoreKey = useRef(false);
 
   const fetchData = useCallback(async (z: string) => {
     setLoading(true);
@@ -708,6 +762,17 @@ export default function Home() {
     }
   }, []);
 
+  const loadNcore = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ncore");
+      const json = (await res.json()) as ReadingsResponse;
+      if (res.ok) setNcoreReading(json.data);
+    } catch {
+      // Non-fatal — the reference site marker simply won't have live data
+      // yet; it'll still appear on the next successful refresh.
+    }
+  }, []);
+
   // Load default zip on mount
   useEffect(() => {
     setInput(DEFAULT_ZIP);
@@ -721,6 +786,15 @@ export default function Home() {
     const id = setInterval(loadSensors, 5 * 60 * 1000);
     return () => clearInterval(id);
   }, [loadSensors]);
+
+  // Load the fixed NCore/PAMS reference site on mount, independent of
+  // whatever zip is searched, then refresh roughly as often as the
+  // underlying AirNow/Open-Meteo fetch-level cache (15 min).
+  useEffect(() => {
+    loadNcore();
+    const id = setInterval(loadNcore, 15 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [loadNcore]);
 
   // Reverse-geocode the station's coordinates whenever they change (i.e. a
   // new zip search). Skips refetching if it's the same spot as last time.
@@ -737,6 +811,20 @@ export default function Home() {
         fetchedStationKey.current = null; // allow a retry on the next render
       });
   }, [data]);
+
+  // Reverse-geocode the NCore/PAMS site's coordinates exactly once — it's a
+  // fixed location, so there's no need to re-fetch on every refresh.
+  useEffect(() => {
+    if (!ncoreReading || fetchedNcoreKey.current) return;
+    fetchedNcoreKey.current = true;
+
+    fetch(`/api/geocode?lat=${ncoreReading.location.lat}&lng=${ncoreReading.location.lng}`)
+      .then((r) => r.json())
+      .then((json: GeocodeResponse) => setAddresses((prev) => ({ ...prev, ncore: json.address ?? null })))
+      .catch(() => {
+        fetchedNcoreKey.current = false; // allow a retry on the next render
+      });
+  }, [ncoreReading]);
 
   // Reverse-geocode each portable sensor exactly once (addresses don't move,
   // so there's no need to re-fetch on every 5-min sensor refresh).
@@ -774,12 +862,18 @@ export default function Home() {
       const s = sensors.find((x) => x.sensor_index === selected.sensor_index);
       if (s) return sensorToSelectedReading(s, sensorsCached, sensorsCacheAge);
     }
+    if (selected.kind === "ncore" && ncoreReading) {
+      return stationToSelectedReading(ncoreReading, false, 0);
+    }
     return stationToSelectedReading(d, cached, cacheAge);
-  }, [d, cached, cacheAge, selected, sensors, sensorsCached, sensorsCacheAge]);
+  }, [d, cached, cacheAge, selected, sensors, sensorsCached, sensorsCacheAge, ncoreReading]);
 
   const trendSource = useMemo<TrendSource>(() => {
     if (selected.kind === "sensor" && sensors.some((s) => s.sensor_index === selected.sensor_index)) {
       return { kind: "sensor", sensorIndex: selected.sensor_index };
+    }
+    if (selected.kind === "ncore") {
+      return { kind: "ncore" };
     }
     return { kind: "station", zip };
   }, [selected, sensors, zip]);
@@ -871,6 +965,7 @@ export default function Home() {
             selected={selected}
             onSelect={setSelected}
             addresses={addresses}
+            ncoreReading={ncoreReading}
           />
 
           {/* Location + last updated bar */}
@@ -1037,7 +1132,16 @@ export default function Home() {
                 ))}
               </div>
             </div>
-            <TrendChart key={selected.kind === "station" ? `station-${zip}` : `sensor-${selected.sensor_index}`} source={trendSource} />
+            <TrendChart
+              key={
+                selected.kind === "station"
+                  ? `station-${zip}`
+                  : selected.kind === "sensor"
+                  ? `sensor-${selected.sensor_index}`
+                  : "ncore"
+              }
+              source={trendSource}
+            />
           </div>
 
           {/* ── Row 4: PAMS / NCore historical pollutants (Shelby Farms) ── */}
@@ -1051,10 +1155,18 @@ export default function Home() {
             <span>
               {selected.kind === "station"
                 ? "Data: EPA AirNow · Open-Meteo (CC BY 4.0) · Nominatim/OSM (ODbL)"
-                : "Data: PurpleAir portable sensor"}
+                : selected.kind === "sensor"
+                ? "Data: PurpleAir portable sensor"
+                : "Data: EPA AirNow (nearest reporting site) · Open-Meteo — Shelby Farms NCore/PAMS"}
             </span>
             <button
-              onClick={() => (selected.kind === "station" ? fetchData(zip) : loadSensors())}
+              onClick={() =>
+                selected.kind === "station"
+                  ? fetchData(zip)
+                  : selected.kind === "sensor"
+                  ? loadSensors()
+                  : loadNcore()
+              }
               disabled={loading}
               style={{
                 fontSize: 11, padding: "3px 10px",
