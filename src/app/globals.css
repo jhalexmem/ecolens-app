@@ -327,24 +327,13 @@ img, svg, canvas {
    - .ecolens-facility-property: a purple dotted approximate property/
      parcel-line outline, always static (never pulses). */
 
-@keyframes ecolens-facility-pulse {
-  0%   { stroke: var(--facility-red); }
-  33%  { stroke: var(--facility-orange); }
-  66%  { stroke: var(--facility-yellow); }
-  100% { stroke: var(--facility-red); }
-}
-
-.ecolens-facility-footprint {
-  animation: ecolens-facility-pulse 3s linear infinite;
-}
-
-/* "Static" mode toggle: applied as a class on the Leaflet map container so a
-   single control can flip every footprint outline at once, without having
-   to reach into each individual path. */
-.ecolens-map.ecolens-facility-flash-off .ecolens-facility-footprint {
-  animation: none;
-  stroke: var(--highlight);
-}
+/* The red→orange→yellow "flash" pulse is driven directly from JS
+   (setInterval + layer.setStyle() in SensorMap.tsx) rather than a CSS
+   @keyframes animation — a CSS animation targeting this class didn't
+   reliably override Leaflet's own setAttribute()-painted stroke/fill, so the
+   outline never visibly flashed. setStyle() sidesteps that entirely. The
+   "static" toggle is likewise just a setStyle() call back to a solid color,
+   not a class swap. */
 
 .ecolens-facility-property {
   stroke: var(--facility-purple);

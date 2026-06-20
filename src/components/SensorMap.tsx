@@ -355,12 +355,28 @@ const HIGHLIGHT = "#FF7A1A";
 // Leaflet-controlled inline styles, not just CSS classes).
 const LOCATE_BLUE = "#0A84FF";
 
-// Major-facilities overlay colors — keep in sync with --facility-orange and
-// --facility-purple in globals.css. The footprint outline's actual red→
-// orange→yellow pulse is driven by the .ecolens-facility-footprint CSS
-// animation (see globals.css), which overrides whatever stroke color
-// Leaflet paints initially — these are just that initial paint plus the
-// solid color used once the user switches to "static" mode.
+// Major-facilities overlay colors — keep in sync with --facility-red/
+// orange/yellow/purple in globals.css.
+//
+// The footprint outline's red→orange→yellow pulse is driven directly from
+// JS (setInterval + layer.setStyle below) rather than a CSS animation on
+// the SVG path's `stroke`/`fill` presentation attributes. A first version
+// used a CSS @keyframes animation, but that depends on the browser
+// honoring a CSS rule overriding presentation attributes Leaflet sets via
+// setAttribute — which didn't reliably take effect, so the outline never
+// visibly flashed. Driving it from setStyle() sidesteps that entirely.
+//
+// Step rate is capped well under the WCAG "three flashes per second"
+// photosensitive-seizure safety threshold — true strobing at ~15-20Hz (as
+// literally requested) sits in the most dangerous range for photosensitive
+// epilepsy, so instead this steps fast enough to read as an obvious, brisk
+// pulse (~3 color-steps/sec, ~1 full red-orange-yellow cycle/sec) without
+// crossing that line.
+const FACILITY_RED = "#E2402E";
+const FACILITY_ORANGE = "#FF8C1A";
+const FACILITY_YELLOW = "#FFD23F";
+const FACILITY_PULSE_COLORS = [FACILITY_RED, FACILITY_ORANGE, FACILITY_YELLOW];
+const FACILITY_PULSE_STEP_MS = 350;
 const FACILITY_HIGHLIGHT = "#FF8C1A";
 const FACILITY_PURPLE = "#7F4FE0";
 
@@ -413,9 +429,9 @@ function createLocateControl(L: any, onClick: () => void) {
  * Small fixed control (top-right, stacking under "Show on map") that lets
  * the user choose whether the major-facilities footprint outlines pulse
  * red → orange → yellow, or sit still as a solid highlight-orange outline.
- * Implemented as a single CSS class toggle on the Leaflet map container
- * (ecolens-facility-flash-off — see globals.css) rather than reaching into
- * each polygon individually.
+ * The actual color change is driven by startFacilityPulse/stopFacilityPulse
+ * (setInterval + layer.setStyle() on every footprint polygon) — this control
+ * just reports the checkbox state via onToggle.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function createFacilityFlashControl(
@@ -461,9 +477,14 @@ function createFacilityFlashControl(
  * every shape here is a best-effort rectangle sized from public square-
  * footage/acreage figures, not a traced building or parcel outline (no
  * Overpass/GIS access is reachable from this app's build environment).
+ *
+ * `footprintLayers` is an out-param: every footprint polygon (the one that
+ * pulses) gets pushed onto it as it's created, so the caller can drive the
+ * red→orange→yellow pulse directly via setStyle() on a timer — see
+ * FACILITY_PULSE_COLORS / startFacilityPulse below.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function createFacilitiesLayer(L: any) {
+function createFacilitiesLayer(L: any, footprintLayers: any[]) {
   const group = L.layerGroup();
 
   for (const facility of FACILITIES) {
@@ -473,10 +494,11 @@ function createFacilitiesLayer(L: any) {
     const footprint = L.polygon(footprintCoords, {
       className: "ecolens-facility-footprint",
       color: FACILITY_HIGHLIGHT,
-      weight: 2.5,
-      fillOpacity: 0.05,
+      weight: 3,
+      fillOpacity: 0.08,
       fillColor: FACILITY_HIGHLIGHT,
     });
+    footprintLayers.push(footprint);
     const property = L.polygon(propertyCoords, {
       className: "ecolens-facility-property",
       color: FACILITY_PURPLE,
@@ -666,6 +688,12 @@ export default function SensorMap({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const highwaysLayerRef = useRef<any>(null);
   const facilityFlashRef = useRef<boolean>(true);
+  // Every footprint polygon (populated by createFacilitiesLayer) + the
+  // setInterval driving their red→orange→yellow color cycle — see
+  // startFacilityPulse/stopFacilityPulse below.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const facilityFootprintLayersRef = useRef<any[]>([]);
+  const facilityPulseIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Boundary-line overlays (congressional districts, counties, ZIP/ZCTA) —
   // plain L.geoJSON vector outlines, no fill, sourced server-side from the
   // Census Bureau's TIGERweb service (see /api/boundaries/*). Tennessee's 9
@@ -1076,7 +1104,8 @@ export default function SensorMap({
         // site, TVA Allen plant, MLGW/TVA substations, xAI water-recycling
         // plant) + major-interstate highlight — both placed on the map and
         // on by default; see createFacilitiesLayer/createHighwaysLayer above.
-        facilitiesLayerRef.current = createFacilitiesLayer(L);
+        facilityFootprintLayersRef.current = [];
+        facilitiesLayerRef.current = createFacilitiesLayer(L, facilityFootprintLayersRef.current);
         facilitiesLayerRef.current.addTo(mapRef.current);
         highwaysLayerRef.current = createHighwaysLayer(L);
         highwaysLayerRef.current.addTo(mapRef.current);
@@ -1118,14 +1147,42 @@ export default function SensorMap({
         });
 
         // Facility-outline flash/static toggle (top-right, under "Show on
-        // map") — flips a CSS class on the map container; see globals.css's
-        // .ecolens-facility-flash-off override.
-        mapRef.current
-          .getContainer()
-          .classList.toggle("ecolens-facility-flash-off", !facilityFlashRef.current);
+        // map") — directly drives each footprint polygon's color via
+        // setStyle() on a timer (see FACILITY_PULSE_COLORS/FACILITY_PULSE_STEP_MS
+        // above), rather than a CSS animation, so it reliably takes effect.
+        const startFacilityPulse = () => {
+          if (facilityPulseIntervalRef.current) return;
+          let step = 0;
+          facilityPulseIntervalRef.current = setInterval(() => {
+            step = (step + 1) % FACILITY_PULSE_COLORS.length;
+            const color = FACILITY_PULSE_COLORS[step];
+            facilityFootprintLayersRef.current.forEach((layer) => {
+              layer.setStyle({ color, fillColor: color });
+            });
+          }, FACILITY_PULSE_STEP_MS);
+        };
+        const stopFacilityPulse = () => {
+          if (facilityPulseIntervalRef.current) {
+            clearInterval(facilityPulseIntervalRef.current);
+            facilityPulseIntervalRef.current = null;
+          }
+          facilityFootprintLayersRef.current.forEach((layer) => {
+            layer.setStyle({ color: FACILITY_HIGHLIGHT, fillColor: FACILITY_HIGHLIGHT });
+          });
+        };
+
+        if (facilityFlashRef.current) {
+          startFacilityPulse();
+        } else {
+          stopFacilityPulse();
+        }
         createFacilityFlashControl(L, facilityFlashRef.current, (flashing) => {
           facilityFlashRef.current = flashing;
-          mapRef.current?.getContainer().classList.toggle("ecolens-facility-flash-off", !flashing);
+          if (flashing) {
+            startFacilityPulse();
+          } else {
+            stopFacilityPulse();
+          }
         }).addTo(mapRef.current);
 
         // ── "You are here" locator (blue dot, bottom-right button) ──────────
@@ -1552,6 +1609,10 @@ export default function SensorMap({
         navigator.geolocation.clearWatch(locateWatchIdRef.current);
       }
       locateOrientationCleanupRef.current();
+      if (facilityPulseIntervalRef.current) {
+        clearInterval(facilityPulseIntervalRef.current);
+        facilityPulseIntervalRef.current = null;
+      }
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
