@@ -236,6 +236,30 @@ function aqiHex(aqi: number | null): string {
   return "#993C1D";
 }
 
+export interface BoundaryInfo {
+  zip: string | null;
+  county: string | null;
+  district: string | null;
+  repName: string | null;
+}
+
+/**
+ * Point-in-polygon lookup behind the floating boundary indicator — shared by
+ * the "active selection" effect below and by clicking directly into any of
+ * the boundary-line overlays (congressional district / county / ZIP), which
+ * always resolves all three designations for the clicked point regardless
+ * of which of the three overlays happen to be toggled on.
+ */
+async function fetchBoundaryInfo(lat: number, lng: number): Promise<BoundaryInfo | null> {
+  try {
+    const params = new URLSearchParams({ lat: String(lat), lng: String(lng) });
+    const res = await fetch(`/api/boundaries/lookup?${params}`);
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
 // Hover/selected accent — keep in sync with --highlight in globals.css.
 // Hardcoded (rather than var(--highlight)) because Leaflet sets this as an
 // SVG presentation attribute / inline style on elements it controls directly,
@@ -419,36 +443,79 @@ export default function SensorMap({
         );
         windSourceNoteRef.current = createWindSourceNote(L);
 
-        // ── Boundary-line overlays: plain vector outlines, no fill ───────────
+        // ── Boundary-line overlays: plain vector outlines, effectively no
+        // fill ─────────────────────────────────────────────────────────────
         // Colors match TIGERweb's own default Census renderer for each layer,
         // so they read as "official" and stay visually distinct from the
         // wind (steel blue flecks) overlay.
+        //
+        // fillOpacity is 0.02, not a true 0 — a fully transparent
+        // (fillOpacity: 0) polygon isn't "painted" as far as the browser's
+        // hit-testing is concerned, so only its stroke would respond to
+        // hover/click, not its interior. A near-zero fill keeps the visual
+        // look identical (outline-only) while making the whole polygon area
+        // hoverable/clickable, which the tooltip-on-hover / click-anywhere-
+        // inside behavior below depends on.
+        // Shared click behavior for all three boundary layers below: rather
+        // than popping up just that one layer's own value, a click resolves
+        // and shows all three designations together (via the same bottom-
+        // left indicator the active-selection effect drives) — whichever of
+        // the three overlays happen to be toggled on at the time doesn't
+        // matter, since the lookup always re-derives all three server-side.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const showAllBoundariesAt = (e: any) => {
+          fetchBoundaryInfo(e.latlng.lat, e.latlng.lng).then((data) => {
+            if (data) setBoundaryInfo(data);
+          });
+        };
+
         congressionalLayerRef.current = L.geoJSON(undefined, {
-          style: { color: "#1E82C3", weight: 2, dashArray: "6,4", fillOpacity: 0 },
+          style: { color: "#1E82C3", weight: 2, dashArray: "6,4", fillOpacity: 0.02 },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           onEachFeature: (feature: any, layer: any) => {
             const p = feature.properties ?? {};
             // TNMap's own field names: DISTRICT ("1".."9"), NAME (the
             // sitting representative, e.g. "Representative Steve Cohen").
-            if (p.DISTRICT) layer.bindPopup(`District ${p.DISTRICT}${p.NAME ? ` — ${p.NAME}` : ""}`);
+            if (p.DISTRICT) {
+              layer.bindTooltip(`District ${p.DISTRICT}`, {
+                sticky: true,
+                direction: "auto",
+                className: "ecolens-boundary-tooltip",
+              });
+            }
+            layer.on("click", showAllBoundariesAt);
           },
         });
         countyLayerRef.current = L.geoJSON(undefined, {
-          style: { color: "#9B9B9B", weight: 1.25, fillOpacity: 0 },
+          style: { color: "#9B9B9B", weight: 1.25, fillOpacity: 0.02 },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           onEachFeature: (feature: any, layer: any) => {
             const p = feature.properties ?? {};
             const label = p.BASENAME ?? p.NAME;
-            if (label) layer.bindPopup(`${label} County`);
+            if (label) {
+              layer.bindTooltip(`${label} County`, {
+                sticky: true,
+                direction: "auto",
+                className: "ecolens-boundary-tooltip",
+              });
+            }
+            layer.on("click", showAllBoundariesAt);
           },
         });
         zipLayerRef.current = L.geoJSON(undefined, {
-          style: { color: "#99454A", weight: 1.5, dashArray: "2,4", fillOpacity: 0 },
+          style: { color: "#99454A", weight: 1.5, dashArray: "2,4", fillOpacity: 0.02 },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           onEachFeature: (feature: any, layer: any) => {
             const p = feature.properties ?? {};
             const zip = p.ZCTA5 ?? p.BASENAME;
-            if (zip) layer.bindPopup(`ZIP ${zip}`);
+            if (zip) {
+              layer.bindTooltip(`ZIP ${zip}`, {
+                sticky: true,
+                direction: "auto",
+                className: "ecolens-boundary-tooltip",
+              });
+            }
+            layer.on("click", showAllBoundariesAt);
           },
         });
 
@@ -881,15 +948,9 @@ export default function SensorMap({
     }
 
     let cancelled = false;
-    const params = new URLSearchParams({ lat: String(point.lat), lng: String(point.lng) });
-    fetch(`/api/boundaries/lookup?${params}`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (!cancelled && data) setBoundaryInfo(data);
-      })
-      .catch(() => {
-        // Best-effort — leave the previous label up rather than blanking it.
-      });
+    fetchBoundaryInfo(point.lat, point.lng).then((data) => {
+      if (!cancelled && data) setBoundaryInfo(data);
+    });
 
     return () => {
       cancelled = true;

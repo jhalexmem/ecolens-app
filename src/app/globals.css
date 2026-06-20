@@ -152,6 +152,26 @@ img, svg, canvas {
   text-decoration: underline;
 }
 
+/* ── Boundary hover tooltip (ZIP/county/congressional-district overlays) ── */
+/* Overrides Leaflet's default tooltip chrome (white box, generic border) to
+   match the app's other floating labels (Expand/Collapse button, the
+   bottom-left ZIP/county/district indicator, the wind-source note). */
+
+.ecolens-boundary-tooltip {
+  background: rgba(255,255,255,0.92);
+  color: #1a1a18;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+.ecolens-boundary-tooltip::before {
+  border-top-color: rgba(255,255,255,0.92);
+}
+
 /* ── Map control layout ───────────────────────────────────────────────── */
 /* SensorMap.tsx renders its own "Expand/Collapse map" button absolutely
    positioned in the top-left corner, outside Leaflet's control system.
