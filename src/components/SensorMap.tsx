@@ -261,11 +261,11 @@ async function fetchBoundaryInfo(lat: number, lng: number): Promise<BoundaryInfo
 }
 
 // Which of the 3 designations the user wants surfaced on hover/click — set
-// via the checkboxes in the click popup (see buildBoundaryPopupContent
-// below). Defaults to "show everything available" so behavior out of the
-// box matches what the floating indicator always did; the popup lets the
-// user narrow that down, and the choice persists across subsequent
-// hovers/clicks until changed again.
+// via the checkboxes in the fixed "Show on map" control (see
+// createDesignationPrefsControl below). Defaults to "show everything
+// available" so behavior out of the box matches what the floating indicator
+// always did; the control lets the user narrow that down, and the choice
+// persists across subsequent hovers/clicks until changed again.
 export interface DesignationPrefs {
   zip: boolean;
   county: boolean;
@@ -291,54 +291,49 @@ function formatDesignations(data: BoundaryInfo, prefs: DesignationPrefs): string
 }
 
 /**
- * Builds the content element for the click popup: the combined designation
- * line (filtered by the user's current checkbox choices) plus the 3
- * checkboxes themselves. Mutates `prefs` in place (it's the same object the
- * caller's ref holds) and calls `onChange` after every toggle so the caller
- * can keep other UI (the bottom-left indicator) in sync.
+ * Small, always-visible control (top-right, under the layers control) where
+ * the user picks which of the 3 designations — ZIP, county, congressional
+ * district — get surfaced in the hover tooltip and the bottom-left
+ * indicator. Lives in exactly one fixed spot rather than popping up at the
+ * cursor or click point, so it never ends up competing on-screen with
+ * whatever's currently under the cursor or just got clicked.
  */
-function buildBoundaryPopupContent(
-  data: BoundaryInfo,
-  prefs: DesignationPrefs,
-  onChange: () => void
-): HTMLElement {
-  const container = document.createElement("div");
-  container.className = "ecolens-boundary-popup";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createDesignationPrefsControl(L: any, prefs: DesignationPrefs, onChange: () => void) {
+  const DesignationPrefsControl = L.Control.extend({
+    options: { position: "topright" },
+    onAdd() {
+      const container = L.DomUtil.create("div", "ecolens-designation-control");
 
-  const label = document.createElement("div");
-  label.className = "ecolens-boundary-popup-label";
-  container.appendChild(label);
+      const title = document.createElement("div");
+      title.className = "ecolens-designation-control-title";
+      title.textContent = "Show on map:";
+      container.appendChild(title);
 
-  const renderLabel = () => {
-    label.textContent = formatDesignations(data, prefs) ?? "No designations selected";
-  };
-  renderLabel();
+      const addCheckbox = (key: keyof DesignationPrefs, text: string) => {
+        const wrap = document.createElement("label");
+        wrap.className = "ecolens-designation-control-checkbox";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = prefs[key];
+        input.addEventListener("change", () => {
+          prefs[key] = input.checked;
+          onChange();
+        });
+        wrap.appendChild(input);
+        wrap.appendChild(document.createTextNode(` ${text}`));
+        container.appendChild(wrap);
+      };
 
-  const options = document.createElement("div");
-  options.className = "ecolens-boundary-popup-options";
+      addCheckbox("zip", "ZIP");
+      addCheckbox("county", "County");
+      addCheckbox("district", "District");
 
-  const addCheckbox = (key: keyof DesignationPrefs, text: string) => {
-    const wrap = document.createElement("label");
-    wrap.className = "ecolens-boundary-popup-checkbox";
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.checked = prefs[key];
-    input.addEventListener("change", () => {
-      prefs[key] = input.checked;
-      renderLabel();
-      onChange();
-    });
-    wrap.appendChild(input);
-    wrap.appendChild(document.createTextNode(` ${text}`));
-    options.appendChild(wrap);
-  };
-
-  addCheckbox("zip", "ZIP");
-  addCheckbox("county", "County");
-  addCheckbox("district", "District");
-
-  container.appendChild(options);
-  return container;
+      L.DomEvent.disableClickPropagation(container);
+      return container;
+    },
+  });
+  return new DesignationPrefsControl();
 }
 
 // Hover/selected accent — keep in sync with --highlight in globals.css.
@@ -439,17 +434,16 @@ export default function SensorMap({
   const zipLayerRef = useRef<any>(null);
   const zipActiveRef = useRef(false);
   const zipDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // The single boundary polygon (across all 3 layers above) currently
-  // "selected" via click — kept filled-in after the cursor leaves so the
-  // last-clicked area stays visually highlighted. Cleared/replaced whenever
-  // a different polygon is clicked. See the hover/click wiring below.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const selectedBoundaryLayerRef = useRef<any>(null);
   // User's choice of which designations to surface on hover/click, set via
-  // the checkboxes in the click popup. Defaults to "all 3" — a ref (not
-  // state) since it's read inside imperative Leaflet event handlers and
+  // the fixed "Show on map" control (top-right). Defaults to "all 3" — a ref
+  // (not state) since it's read inside imperative Leaflet event handlers and
   // doesn't itself need to trigger a React re-render when it changes.
   const designationPrefsRef = useRef<DesignationPrefs>({ zip: true, county: true, district: true });
+  // Most recent raw (unmasked) BoundaryInfo resolved from hover/click/
+  // selection — kept so toggling a checkbox in the prefs control can
+  // immediately re-mask and refresh the bottom-left indicator without a
+  // fresh server round-trip.
+  const lastBoundaryDataRef = useRef<BoundaryInfo | null>(null);
   // True once the one-time "fit to all known points" has run (page load /
   // refresh). After that, selection changes pan to the selected point
   // instead of re-fitting the whole metro area.
@@ -552,17 +546,21 @@ export default function SensorMap({
         // attachBoundaryInteractivity wires up the rest: hovering a polygon
         // fills it in (with its own exact geometry — no approximation, since
         // it's the same feature TIGERweb/TNMap returned) to make the area's
-        // real shape visible at a glance, and clicking "pins" that fill so it
-        // stays highlighted after the cursor leaves, until a different
-        // polygon (in any of the 3 layers) is clicked next.
+        // real shape visible at a glance, and the fill reverts the instant
+        // the cursor leaves — nothing stays highlighted once you've moved on
+        // to a different spot.
         //
-        // Hover tooltip content and the click popup both resolve all 3
-        // designations for that point server-side, then filter to whichever
-        // the user has checked on in the popup (designationPrefsRef,
-        // defaulting to all 3) — that's a user choice, independent of which
-        // overlay lines happen to be drawn on the map at the time.
+        // Hover and click both resolve all 3 designations for that point
+        // server-side, then filter to whichever the user has checked on in
+        // the fixed "Show on map" control (designationPrefsRef, top-right,
+        // defaulting to all 3) — a deliberate user choice, independent of
+        // which overlay lines happen to be drawn on the map at the time.
+        // Hover updates the sticky tooltip that follows the cursor; click
+        // additionally pins the result into the bottom-left indicator and
+        // forces that same tooltip open (useful on touch, where there's no
+        // hover) — neither opens a separate popup, so there's only ever one
+        // thing on screen telling you what's there.
         const HOVER_FILL_OPACITY = 0.28;
-        const SELECTED_FILL_OPACITY = 0.42;
 
         const attachBoundaryInteractivity = (
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -572,51 +570,29 @@ export default function SensorMap({
         ) => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           layer.on("mouseover", (e: any) => {
-            if (selectedBoundaryLayerRef.current !== layer) {
-              layer.setStyle({ fillOpacity: HOVER_FILL_OPACITY });
-            }
+            layer.setStyle({ fillOpacity: HOVER_FILL_OPACITY });
             layer.bringToFront();
             fetchBoundaryInfo(e.latlng.lat, e.latlng.lng).then((data) => {
               if (!data) return;
+              lastBoundaryDataRef.current = data;
               const text = formatDesignations(data, designationPrefsRef.current) ?? fallbackLabel;
               layer.setTooltipContent(text);
             });
           });
           layer.on("mouseout", () => {
-            if (selectedBoundaryLayerRef.current !== layer) {
-              layer.setStyle(baseStyle);
-            }
+            layer.setStyle(baseStyle);
           });
-          // Click resolves all 3 designations for that point and opens a
-          // popup showing whichever the user has checked on, plus the
-          // checkboxes themselves so they can adjust the choice right there.
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           layer.on("click", (e: any) => {
-            if (selectedBoundaryLayerRef.current && selectedBoundaryLayerRef.current !== layer) {
-              selectedBoundaryLayerRef.current.setStyle(
-                selectedBoundaryLayerRef.current.options.ecolensBaseStyle ?? baseStyle
-              );
-            }
-            selectedBoundaryLayerRef.current = layer;
-            layer.setStyle({ fillOpacity: SELECTED_FILL_OPACITY });
-            layer.bringToFront();
-            const latlng = e.latlng;
-            fetchBoundaryInfo(latlng.lat, latlng.lng).then((data) => {
-              if (!data || !mapRef.current) return;
-              const content = buildBoundaryPopupContent(data, designationPrefsRef.current, () => {
-                setBoundaryInfo(maskBoundaryInfo(data, designationPrefsRef.current));
-              });
-              L.popup({ className: "ecolens-boundary-popup-wrap" })
-                .setLatLng(latlng)
-                .setContent(content)
-                .openOn(mapRef.current);
+            fetchBoundaryInfo(e.latlng.lat, e.latlng.lng).then((data) => {
+              if (!data) return;
+              lastBoundaryDataRef.current = data;
+              const text = formatDesignations(data, designationPrefsRef.current) ?? fallbackLabel;
+              layer.setTooltipContent(text);
+              layer.openTooltip(e.latlng);
               setBoundaryInfo(maskBoundaryInfo(data, designationPrefsRef.current));
             });
           });
-          // Stash the base style on the layer itself so the click handler
-          // above can restore *any* previously-selected layer correctly,
-          // even one from a different boundary group with different colors.
-          layer.options.ecolensBaseStyle = baseStyle;
         };
 
         const congressionalBaseStyle = { color: "#1E82C3", weight: 2, dashArray: "6,4", fillOpacity: 0.02 };
@@ -826,6 +802,15 @@ export default function SensorMap({
             { position: "topright", collapsed: true }
           )
           .addTo(mapRef.current);
+
+        // Fixed "Show on map" checkbox control (top-right, under the layers
+        // control) — the one and only place the user picks which of ZIP /
+        // county / district to surface. See attachBoundaryInteractivity above.
+        createDesignationPrefsControl(L, designationPrefsRef.current, () => {
+          if (lastBoundaryDataRef.current) {
+            setBoundaryInfo(maskBoundaryInfo(lastBoundaryDataRef.current, designationPrefsRef.current));
+          }
+        }).addTo(mapRef.current);
       }
 
       // Clear previous markers before redrawing
@@ -1108,7 +1093,10 @@ export default function SensorMap({
 
     let cancelled = false;
     fetchBoundaryInfo(point.lat, point.lng).then((data) => {
-      if (!cancelled && data) setBoundaryInfo(maskBoundaryInfo(data, designationPrefsRef.current));
+      if (!cancelled && data) {
+        lastBoundaryDataRef.current = data;
+        setBoundaryInfo(maskBoundaryInfo(data, designationPrefsRef.current));
+      }
     });
 
     return () => {

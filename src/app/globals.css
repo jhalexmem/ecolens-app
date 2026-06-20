@@ -185,54 +185,44 @@ img, svg, canvas {
   outline: none;
 }
 
-/* ── Boundary click popup (designation label + ZIP/county/district picker) ── */
-/* Opened via L.popup() when a ZIP/county/congressional-district polygon is
-   clicked — shows the currently-selected designation(s) plus checkboxes the
-   user can toggle to choose which designations get surfaced here and in the
-   hover tooltips going forward. Strips Leaflet's default popup chrome down
-   to match the app's other floating labels. */
+/* ── Designation-prefs control (top-right, under the layers control) ────── */
+/* A fixed, always-visible control — NOT a popup — where the user picks which
+   of ZIP / county / congressional-district to surface in the hover tooltip
+   and the bottom-left indicator. Living in one fixed spot (rather than
+   popping up at the cursor or click point) keeps it from ever competing
+   on-screen with whatever's currently under the cursor or just got clicked. */
 
-.ecolens-boundary-popup-wrap .leaflet-popup-content-wrapper {
-  background: rgba(255,255,255,0.96);
-  color: #1a1a18;
-  border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+.ecolens-designation-control {
+  background: rgba(255,255,255,0.94);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 9px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
 }
 
-.ecolens-boundary-popup-wrap .leaflet-popup-content {
-  margin: 8px 10px;
-}
-
-.ecolens-boundary-popup-wrap .leaflet-popup-tip {
-  background: rgba(255,255,255,0.96);
-}
-
-.ecolens-boundary-popup-label {
-  font-size: 12px;
+.ecolens-designation-control-title {
+  font-size: 11px;
   font-weight: 600;
-  margin-bottom: 6px;
+  color: #5f5e5a;
   white-space: nowrap;
 }
 
-.ecolens-boundary-popup-options {
-  display: flex;
-  gap: 10px;
-  border-top: 1px solid var(--border);
-  padding-top: 6px;
-}
-
-.ecolens-boundary-popup-checkbox {
+.ecolens-designation-control-checkbox {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
-  font-weight: 500;
-  color: #5f5e5a;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1a1a18;
   cursor: pointer;
   white-space: nowrap;
 }
 
-.ecolens-boundary-popup-checkbox input {
+.ecolens-designation-control-checkbox input {
   cursor: pointer;
   margin: 0;
 }
