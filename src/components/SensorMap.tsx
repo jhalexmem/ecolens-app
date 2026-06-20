@@ -339,6 +339,17 @@ export default function SensorMap({
   const initialFitDoneRef = useRef(false);
   const prevSelectedKeyRef = useRef<string | null>(null);
   const [expanded, setExpanded] = useState(false);
+  // Floating ZIP/county/congressional-district label (bottom-left) — a
+  // point-in-polygon lookup for whichever location is currently active.
+  // Independent of the toggleable boundary-line overlays above, which only
+  // load their data once the user switches them on; this label is meant to
+  // always reflect wherever the dashboard is currently focused.
+  const [boundaryInfo, setBoundaryInfo] = useState<{
+    zip: string | null;
+    county: string | null;
+    district: string | null;
+    repName: string | null;
+  } | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -841,6 +852,50 @@ export default function SensorMap({
     return () => clearTimeout(t);
   }, [expanded]);
 
+  // Resolve the "active" point for the floating boundary label: whatever's
+  // currently selected (sensor/ncore), else the searched station, else the
+  // NCore/PAMS site as a last resort. Mirrors the panTo logic in the main
+  // effect above but kept separate since this fetch is much lighter-weight
+  // (one point lookup vs. the full Leaflet render) and shouldn't be gated
+  // behind that effect's heavier dependency list.
+  useEffect(() => {
+    const point: { lat: number; lng: number } | null =
+      selected?.kind === "sensor"
+        ? (() => {
+            const s = sensors.find((s) => s.sensor_index === selected.sensor_index);
+            return s && s.lat != null && s.lng != null ? { lat: s.lat, lng: s.lng } : null;
+          })()
+        : selected?.kind === "ncore"
+        ? ncoreSite
+          ? { lat: ncoreSite.lat, lng: ncoreSite.lng }
+          : null
+        : station
+        ? { lat: station.lat, lng: station.lng }
+        : ncoreSite
+        ? { lat: ncoreSite.lat, lng: ncoreSite.lng }
+        : null;
+
+    if (!point) {
+      setBoundaryInfo(null);
+      return;
+    }
+
+    let cancelled = false;
+    const params = new URLSearchParams({ lat: String(point.lat), lng: String(point.lng) });
+    fetch(`/api/boundaries/lookup?${params}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data) setBoundaryInfo(data);
+      })
+      .catch(() => {
+        // Best-effort — leave the previous label up rather than blanking it.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selected, station, ncoreSite, sensors]);
+
   return (
     <div style={{ position: "relative" }}>
       <button
@@ -877,6 +932,34 @@ export default function SensorMap({
         }}
         aria-label="Map of live portable air-quality sensors"
       />
+      {boundaryInfo && (boundaryInfo.zip || boundaryInfo.county || boundaryInfo.district) && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 8,
+            left: 8,
+            zIndex: 1000,
+            background: "rgba(255,255,255,0.92)",
+            color: "#1a1a18",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            padding: "4px 9px",
+            fontSize: 12,
+            fontWeight: 600,
+            boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+            pointerEvents: "none",
+            maxWidth: "min(90%, 360px)",
+          }}
+        >
+          {[
+            boundaryInfo.zip ? `ZIP ${boundaryInfo.zip}` : null,
+            boundaryInfo.county ? `${boundaryInfo.county} County` : null,
+            boundaryInfo.district ? `Congressional District ${boundaryInfo.district}` : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </div>
+      )}
     </div>
   );
 }

@@ -51,3 +51,40 @@ export async function queryTigerwebGeoJSON(
   }
   return res.json();
 }
+
+/**
+ * Point-in-polygon lookup against a TIGERweb layer — same service as
+ * queryTigerwebGeoJSON above, but for "which ZCTA/county contains this one
+ * lat/lng" instead of "which features intersect this bbox". Used by the
+ * floating ZIP/county indicator rather than the toggleable line overlays.
+ *
+ * Returns just the matching feature's attributes (not geometry — there's no
+ * need to ship a whole polygon back for a one-line label), or null if the
+ * point doesn't fall inside any feature on this layer.
+ */
+export async function queryTigerwebPointAttributes(
+  layerId: number,
+  lat: number,
+  lng: number,
+  outFields: string
+): Promise<Record<string, unknown> | null> {
+  const params = new URLSearchParams({
+    geometry: `${lng},${lat}`,
+    geometryType: "esriGeometryPoint",
+    inSR: "4326",
+    spatialRel: "esriSpatialRelIntersects",
+    outFields,
+    returnGeometry: "false",
+    resultRecordCount: "1",
+    f: "json",
+  });
+
+  const res = await fetch(`${TIGERWEB_BASE}/${layerId}/query?${params.toString()}`, {
+    next: { revalidate: 86400 },
+  });
+  if (!res.ok) {
+    throw new Error(`TIGERweb HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  return data?.features?.[0]?.attributes ?? null;
+}
