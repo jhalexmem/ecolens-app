@@ -348,6 +348,56 @@ function createDesignationPrefsControl(
 // and we want it to render identically on every browser, including iOS Safari.
 const HIGHLIGHT = "#FF7A1A";
 
+// "You are here" dot/cone color — keep in sync with --locate-blue in
+// globals.css. Hardcoded for the same reason as HIGHLIGHT above (used in
+// Leaflet-controlled inline styles, not just CSS classes).
+const LOCATE_BLUE = "#0A84FF";
+
+// Classic "locate me" glyph (ring + center dot + 4 compass ticks), drawn
+// entirely in currentColor so the button can flip between idle/following/
+// paused just by toggling a CSS class — no markup swap needed.
+const LOCATE_ICON_SVG =
+  '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
+  '<circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>' +
+  '<circle cx="12" cy="12" r="7"/>' +
+  '<line x1="12" y1="1" x2="12" y2="4"/>' +
+  '<line x1="12" y1="20" x2="12" y2="23"/>' +
+  '<line x1="1" y1="12" x2="4" y2="12"/>' +
+  '<line x1="20" y1="12" x2="23" y2="12"/>' +
+  "</svg>";
+
+/**
+ * "Locate me" button (bottom-right, Apple/Google Maps idiom): tap to start
+ * showing your live position as a pulsing blue dot + accuracy circle and
+ * center the map on it; tap again while it's actively following turns it
+ * off entirely. If you drag the map away while it's following, it quietly
+ * drops into a "paused" state instead — the dot keeps updating, but the map
+ * stops auto-panning, so it never fights your own panning/zooming (the same
+ * "don't fight the user for control of the view" principle behind dropping
+ * the old click-popup/pinned-fill boundary behavior). Tap once more from
+ * "paused" to re-center and resume following.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createLocateControl(L: any, onClick: () => void) {
+  const LocateControl = L.Control.extend({
+    options: { position: "bottomright" },
+    onAdd() {
+      const button = L.DomUtil.create("button", "ecolens-locate-button");
+      button.type = "button";
+      button.setAttribute("aria-label", "Show my location");
+      button.title = "Show my location";
+      button.innerHTML = LOCATE_ICON_SVG;
+      L.DomEvent.disableClickPropagation(button);
+      L.DomEvent.on(button, "click", (e: Event) => {
+        L.DomEvent.stop(e);
+        onClick();
+      });
+      return button;
+    },
+  });
+  return new LocateControl();
+}
+
 const DEFAULT_CENTER: [number, number] = [35.1495, -90.049]; // Memphis, TN
 
 /** The single official EPA AirNow reading for the searched zip code. */
@@ -450,6 +500,27 @@ export default function SensorMap({
   // immediately re-mask and refresh the bottom-left indicator without a
   // fresh server round-trip.
   const lastBoundaryDataRef = useRef<BoundaryInfo | null>(null);
+  // "You are here" locator (bottom-right button) — Apple Maps-style blue dot
+  // + accuracy circle, with an optional heading cone once compass/GPS-course
+  // data is available. "off" | "follow" (map auto-pans to each update) |
+  // "paused" (dot still updates; map stays put because the user dragged
+  // away). See createLocateControl above and its wiring further below.
+  const locateStateRef = useRef<"off" | "follow" | "paused">("off");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const locateMarkerRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const locateAccuracyCircleRef = useRef<any>(null);
+  const lastLocatePositionRef = useRef<[number, number] | null>(null);
+  // True once the very first GPS fix after activation has centered/zoomed
+  // the map — subsequent fixes pan smoothly instead of re-zooming each time.
+  const locateInitialFitDoneRef = useRef(false);
+  const locateWatchIdRef = useRef<number | null>(null);
+  // Removes whichever device-orientation listener (if any) is currently
+  // attached, then resets to a no-op once stopped — encapsulating add+remove
+  // behind one ref avoids tracking the event name and handler separately.
+  const locateOrientationCleanupRef = useRef<() => void>(() => {});
+  const locateButtonElRef = useRef<HTMLElement | null>(null);
+  const locateErrorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // True once the one-time "fit to all known points" has run (page load /
   // refresh). After that, selection changes pan to the selected point
   // instead of re-fitting the whole metro area.
@@ -467,6 +538,9 @@ export default function SensorMap({
     district: string | null;
     repName: string | null;
   } | null>(null);
+  // Transient error text (e.g. "Location permission denied") shown near the
+  // locate button; auto-clears itself after a few seconds.
+  const [locateError, setLocateError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -837,6 +911,191 @@ export default function SensorMap({
         (Object.keys(boundaryLayerConfig) as Array<keyof DesignationPrefs>).forEach((key) => {
           if (designationPrefsRef.current[key]) setBoundaryLayerActive(key, true);
         });
+
+        // ── "You are here" locator (blue dot, bottom-right button) ──────────
+        const updateLocateButton = () => {
+          const btn = locateButtonElRef.current;
+          if (!btn) return;
+          btn.classList.toggle("ecolens-locate-active", locateStateRef.current === "follow");
+          btn.classList.toggle("ecolens-locate-paused", locateStateRef.current === "paused");
+        };
+
+        const showLocateError = (message: string) => {
+          setLocateError(message);
+          if (locateErrorTimeoutRef.current) clearTimeout(locateErrorTimeoutRef.current);
+          locateErrorTimeoutRef.current = setTimeout(() => setLocateError(null), 4000);
+        };
+
+        const updateConeRotation = (heading: number) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const el = (locateMarkerRef.current as any)?.getElement?.();
+          const cone = el?.querySelector(".ecolens-locate-cone") as HTMLElement | null;
+          if (!cone) return;
+          cone.style.display = "block";
+          cone.style.transform = `rotate(${heading}deg)`;
+        };
+
+        // iOS 13+ gates deviceorientation behind an explicit permission
+        // prompt that can only be requested from a direct user gesture — the
+        // locate button's own click satisfies that. Other browsers expose
+        // the event with no extra permission step.
+        const attachOrientationListener = () => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const handler = (e: any) => {
+            const heading =
+              typeof e.webkitCompassHeading === "number"
+                ? e.webkitCompassHeading
+                : typeof e.alpha === "number"
+                ? (360 - e.alpha) % 360
+                : null;
+            if (heading != null) updateConeRotation(heading);
+          };
+          const eventName =
+            "ondeviceorientationabsolute" in window ? "deviceorientationabsolute" : "deviceorientation";
+          window.addEventListener(eventName, handler);
+          locateOrientationCleanupRef.current = () => window.removeEventListener(eventName, handler);
+        };
+
+        const requestOrientationIfAvailable = () => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const DOE: any = (window as any).DeviceOrientationEvent;
+          if (!DOE) return;
+          if (typeof DOE.requestPermission === "function") {
+            DOE.requestPermission()
+              .then((state: string) => {
+                if (state === "granted") attachOrientationListener();
+              })
+              .catch(() => {
+                // Prompt dismissed/denied — fall back to the plain dot with
+                // no heading cone; not worth surfacing as an error.
+              });
+          } else {
+            attachOrientationListener();
+          }
+        };
+
+        const handlePosition = (pos: GeolocationPosition) => {
+          if (!mapRef.current) return;
+          const { latitude, longitude, accuracy, heading } = pos.coords;
+          const latlng: [number, number] = [latitude, longitude];
+          lastLocatePositionRef.current = latlng;
+
+          if (!locateMarkerRef.current) {
+            locateMarkerRef.current = L.marker(latlng, {
+              icon: L.divIcon({
+                className: "ecolens-locate-icon",
+                html:
+                  '<div class="ecolens-locate-cone" style="display:none"></div>' +
+                  '<div class="ecolens-locate-dot"></div>',
+                iconSize: [90, 90],
+                iconAnchor: [45, 90],
+              }),
+              interactive: false,
+              keyboard: false,
+              zIndexOffset: 3000,
+            }).addTo(mapRef.current);
+          } else {
+            locateMarkerRef.current.setLatLng(latlng);
+          }
+
+          if (!locateAccuracyCircleRef.current) {
+            locateAccuracyCircleRef.current = L.circle(latlng, {
+              radius: accuracy ?? 30,
+              color: LOCATE_BLUE,
+              weight: 1,
+              fillColor: LOCATE_BLUE,
+              fillOpacity: 0.12,
+              interactive: false,
+            }).addTo(mapRef.current);
+          } else {
+            locateAccuracyCircleRef.current.setLatLng(latlng);
+            locateAccuracyCircleRef.current.setRadius(accuracy ?? 30);
+          }
+
+          // GPS course heading is only populated while actively moving (e.g.
+          // in a car); deviceorientation (above) covers the far more common
+          // "standing still, want to know which way I'm facing" case.
+          if (typeof heading === "number" && !Number.isNaN(heading)) {
+            updateConeRotation(heading);
+          }
+
+          if (locateStateRef.current === "follow") {
+            if (!locateInitialFitDoneRef.current) {
+              locateInitialFitDoneRef.current = true;
+              mapRef.current.setView(latlng, Math.max(mapRef.current.getZoom(), 15));
+            } else {
+              mapRef.current.panTo(latlng, { animate: true });
+            }
+          }
+        };
+
+        const stopLocating = () => {
+          if (locateWatchIdRef.current != null) {
+            navigator.geolocation.clearWatch(locateWatchIdRef.current);
+            locateWatchIdRef.current = null;
+          }
+          locateOrientationCleanupRef.current();
+          locateOrientationCleanupRef.current = () => {};
+          locateStateRef.current = "off";
+          locateInitialFitDoneRef.current = false;
+          lastLocatePositionRef.current = null;
+          updateLocateButton();
+          if (locateMarkerRef.current) {
+            mapRef.current?.removeLayer(locateMarkerRef.current);
+            locateMarkerRef.current = null;
+          }
+          if (locateAccuracyCircleRef.current) {
+            mapRef.current?.removeLayer(locateAccuracyCircleRef.current);
+            locateAccuracyCircleRef.current = null;
+          }
+        };
+
+        const startLocating = () => {
+          if (!navigator.geolocation) {
+            showLocateError("Location isn't supported in this browser.");
+            return;
+          }
+          locateStateRef.current = "follow";
+          locateInitialFitDoneRef.current = false;
+          updateLocateButton();
+          requestOrientationIfAvailable();
+          locateWatchIdRef.current = navigator.geolocation.watchPosition(
+            handlePosition,
+            (err) => {
+              // 1 = PERMISSION_DENIED per the Geolocation spec.
+              showLocateError(err.code === 1 ? "Location permission denied." : "Location unavailable.");
+              stopLocating();
+            },
+            { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+          );
+        };
+
+        const handleLocateClick = () => {
+          if (locateStateRef.current === "off") {
+            startLocating();
+          } else if (locateStateRef.current === "follow") {
+            stopLocating();
+          } else {
+            locateStateRef.current = "follow";
+            updateLocateButton();
+            if (lastLocatePositionRef.current) {
+              mapRef.current.panTo(lastLocatePositionRef.current, { animate: true });
+            }
+          }
+        };
+
+        // Dragging the map away while following drops us into "paused"
+        // instead of fighting the pan on the next position update.
+        mapRef.current.on("dragstart", () => {
+          if (locateStateRef.current === "follow") {
+            locateStateRef.current = "paused";
+            updateLocateButton();
+          }
+        });
+
+        const locateControl = createLocateControl(L, handleLocateClick);
+        locateControl.addTo(mapRef.current);
+        locateButtonElRef.current = locateControl.getContainer();
       }
 
       // Clear previous markers before redrawing
@@ -1073,6 +1332,10 @@ export default function SensorMap({
   // Tear the map down completely on unmount (e.g. fast refresh / nav away)
   useEffect(() => {
     return () => {
+      if (locateWatchIdRef.current != null) {
+        navigator.geolocation.clearWatch(locateWatchIdRef.current);
+      }
+      locateOrientationCleanupRef.current();
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
@@ -1192,6 +1455,29 @@ export default function SensorMap({
           ]
             .filter(Boolean)
             .join(" · ")}
+        </div>
+      )}
+      {locateError && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 50,
+            right: 8,
+            zIndex: 1000,
+            background: "rgba(255,255,255,0.92)",
+            color: "#1a1a18",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            padding: "4px 9px",
+            fontSize: 12,
+            fontWeight: 600,
+            boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+            pointerEvents: "none",
+            maxWidth: "min(90%, 280px)",
+            textAlign: "right",
+          }}
+        >
+          {locateError}
         </div>
       )}
     </div>

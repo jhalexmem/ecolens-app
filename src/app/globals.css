@@ -23,6 +23,7 @@
   --radius-md:  8px;
   --radius-lg:  12px;
   --highlight:  #FF7A1A; /* hover/selected accent for sensor chips + map markers */
+  --locate-blue: #0A84FF; /* "you are here" dot/cone + locate button, Apple Maps-style */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -225,6 +226,83 @@ img, svg, canvas {
 .ecolens-designation-control-checkbox input {
   cursor: pointer;
   margin: 0;
+}
+
+/* ── "You are here" locator (bottom-right button + on-map blue dot) ─────── */
+/* Apple/Google Maps-style current-location indicator: a small pulsing blue
+   dot + translucent accuracy circle drawn directly on the map (a Leaflet
+   divIcon, not a popup — see createLocateControl/handlePosition in
+   SensorMap.tsx), plus a fixed button that starts/stops it and a soft
+   "flashlight" heading cone that appears once compass or GPS-course data
+   is available. */
+
+.ecolens-locate-button {
+  background: rgba(255,255,255,0.94);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #5f5e5a;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+.ecolens-locate-button:hover {
+  color: #1a1a18;
+}
+
+.ecolens-locate-button.ecolens-locate-active {
+  color: var(--locate-blue);
+}
+
+.ecolens-locate-button.ecolens-locate-paused {
+  color: var(--locate-blue);
+  opacity: 0.5;
+}
+
+.ecolens-locate-dot {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  margin-left: -8px;
+  margin-bottom: -8px;
+  border-radius: 50%;
+  background: var(--locate-blue);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+  animation: ecolens-locate-pulse 2.4s ease-in-out infinite;
+}
+
+.ecolens-locate-cone {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 90px;
+  height: 80px;
+  margin-left: -45px;
+  transform-origin: 50% 100%;
+  background: conic-gradient(
+    from -38deg at 50% 100%,
+    rgba(10, 132, 255, 0) 0deg,
+    rgba(10, 132, 255, 0.45) 8deg,
+    rgba(10, 132, 255, 0.45) 68deg,
+    rgba(10, 132, 255, 0) 76deg
+  );
+  pointer-events: none;
+  transition: transform 0.25s linear;
+}
+
+@keyframes ecolens-locate-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 2px rgba(10,132,255,0.3), 0 1px 4px rgba(0,0,0,0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(10,132,255,0.12), 0 1px 4px rgba(0,0,0,0.4);
+  }
 }
 
 /* ── Map control layout ───────────────────────────────────────────────── */
