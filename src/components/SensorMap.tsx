@@ -260,6 +260,87 @@ async function fetchBoundaryInfo(lat: number, lng: number): Promise<BoundaryInfo
   }
 }
 
+// Which of the 3 designations the user wants surfaced on hover/click — set
+// via the checkboxes in the click popup (see buildBoundaryPopupContent
+// below). Defaults to "show everything available" so behavior out of the
+// box matches what the floating indicator always did; the popup lets the
+// user narrow that down, and the choice persists across subsequent
+// hovers/clicks until changed again.
+export interface DesignationPrefs {
+  zip: boolean;
+  county: boolean;
+  district: boolean;
+}
+
+function maskBoundaryInfo(data: BoundaryInfo, prefs: DesignationPrefs): BoundaryInfo {
+  return {
+    zip: prefs.zip ? data.zip : null,
+    county: prefs.county ? data.county : null,
+    district: prefs.district ? data.district : null,
+    repName: prefs.district ? data.repName : null,
+  };
+}
+
+function formatDesignations(data: BoundaryInfo, prefs: DesignationPrefs): string | null {
+  const parts = [
+    prefs.zip && data.zip ? `ZIP ${data.zip}` : null,
+    prefs.county && data.county ? `${data.county} County` : null,
+    prefs.district && data.district ? `Congressional District ${data.district}` : null,
+  ].filter((p): p is string => Boolean(p));
+  return parts.length ? parts.join(" · ") : null;
+}
+
+/**
+ * Builds the content element for the click popup: the combined designation
+ * line (filtered by the user's current checkbox choices) plus the 3
+ * checkboxes themselves. Mutates `prefs` in place (it's the same object the
+ * caller's ref holds) and calls `onChange` after every toggle so the caller
+ * can keep other UI (the bottom-left indicator) in sync.
+ */
+function buildBoundaryPopupContent(
+  data: BoundaryInfo,
+  prefs: DesignationPrefs,
+  onChange: () => void
+): HTMLElement {
+  const container = document.createElement("div");
+  container.className = "ecolens-boundary-popup";
+
+  const label = document.createElement("div");
+  label.className = "ecolens-boundary-popup-label";
+  container.appendChild(label);
+
+  const renderLabel = () => {
+    label.textContent = formatDesignations(data, prefs) ?? "No designations selected";
+  };
+  renderLabel();
+
+  const options = document.createElement("div");
+  options.className = "ecolens-boundary-popup-options";
+
+  const addCheckbox = (key: keyof DesignationPrefs, text: string) => {
+    const wrap = document.createElement("label");
+    wrap.className = "ecolens-boundary-popup-checkbox";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = prefs[key];
+    input.addEventListener("change", () => {
+      prefs[key] = input.checked;
+      renderLabel();
+      onChange();
+    });
+    wrap.appendChild(input);
+    wrap.appendChild(document.createTextNode(` ${text}`));
+    options.appendChild(wrap);
+  };
+
+  addCheckbox("zip", "ZIP");
+  addCheckbox("county", "County");
+  addCheckbox("district", "District");
+
+  container.appendChild(options);
+  return container;
+}
+
 // Hover/selected accent — keep in sync with --highlight in globals.css.
 // Hardcoded (rather than var(--highlight)) because Leaflet sets this as an
 // SVG presentation attribute / inline style on elements it controls directly,
@@ -364,6 +445,11 @@ export default function SensorMap({
   // a different polygon is clicked. See the hover/click wiring below.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const selectedBoundaryLayerRef = useRef<any>(null);
+  // User's choice of which designations to surface on hover/click, set via
+  // the checkboxes in the click popup. Defaults to "all 3" — a ref (not
+  // state) since it's read inside imperative Leaflet event handlers and
+  // doesn't itself need to trigger a React re-render when it changes.
+  const designationPrefsRef = useRef<DesignationPrefs>({ zip: true, county: true, district: true });
   // True once the one-time "fit to all known points" has run (page load /
   // refresh). After that, selection changes pan to the selected point
   // instead of re-fitting the whole metro area.
@@ -469,28 +555,41 @@ export default function SensorMap({
         // real shape visible at a glance, and clicking "pins" that fill so it
         // stays highlighted after the cursor leaves, until a different
         // polygon (in any of the 3 layers) is clicked next.
+        //
+        // Hover tooltip content and the click popup both resolve all 3
+        // designations for that point server-side, then filter to whichever
+        // the user has checked on in the popup (designationPrefsRef,
+        // defaulting to all 3) — that's a user choice, independent of which
+        // overlay lines happen to be drawn on the map at the time.
         const HOVER_FILL_OPACITY = 0.28;
         const SELECTED_FILL_OPACITY = 0.42;
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const attachBoundaryInteractivity = (layer: any, baseStyle: Record<string, unknown>) => {
-          layer.on("mouseover", () => {
+        const attachBoundaryInteractivity = (
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          layer: any,
+          baseStyle: Record<string, unknown>,
+          fallbackLabel: string
+        ) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          layer.on("mouseover", (e: any) => {
             if (selectedBoundaryLayerRef.current !== layer) {
               layer.setStyle({ fillOpacity: HOVER_FILL_OPACITY });
             }
             layer.bringToFront();
+            fetchBoundaryInfo(e.latlng.lat, e.latlng.lng).then((data) => {
+              if (!data) return;
+              const text = formatDesignations(data, designationPrefsRef.current) ?? fallbackLabel;
+              layer.setTooltipContent(text);
+            });
           });
           layer.on("mouseout", () => {
             if (selectedBoundaryLayerRef.current !== layer) {
               layer.setStyle(baseStyle);
             }
           });
-          // Shared click behavior for all three boundary layers: a click
-          // resolves all three designations server-side, then only the
-          // designations whose overlay is currently toggled on get shown —
-          // 3 layers on means all 3 labels, 2 on means 2 labels, etc. — via
-          // the same bottom-left indicator the active-selection effect
-          // drives.
+          // Click resolves all 3 designations for that point and opens a
+          // popup showing whichever the user has checked on, plus the
+          // checkboxes themselves so they can adjust the choice right there.
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           layer.on("click", (e: any) => {
             if (selectedBoundaryLayerRef.current && selectedBoundaryLayerRef.current !== layer) {
@@ -501,14 +600,17 @@ export default function SensorMap({
             selectedBoundaryLayerRef.current = layer;
             layer.setStyle({ fillOpacity: SELECTED_FILL_OPACITY });
             layer.bringToFront();
-            fetchBoundaryInfo(e.latlng.lat, e.latlng.lng).then((data) => {
-              if (!data) return;
-              setBoundaryInfo({
-                zip: zipActiveRef.current ? data.zip : null,
-                county: countyActiveRef.current ? data.county : null,
-                district: congressionalActiveRef.current ? data.district : null,
-                repName: congressionalActiveRef.current ? data.repName : null,
+            const latlng = e.latlng;
+            fetchBoundaryInfo(latlng.lat, latlng.lng).then((data) => {
+              if (!data || !mapRef.current) return;
+              const content = buildBoundaryPopupContent(data, designationPrefsRef.current, () => {
+                setBoundaryInfo(maskBoundaryInfo(data, designationPrefsRef.current));
               });
+              L.popup({ className: "ecolens-boundary-popup-wrap" })
+                .setLatLng(latlng)
+                .setContent(content)
+                .openOn(mapRef.current);
+              setBoundaryInfo(maskBoundaryInfo(data, designationPrefsRef.current));
             });
           });
           // Stash the base style on the layer itself so the click handler
@@ -525,14 +627,15 @@ export default function SensorMap({
             const p = feature.properties ?? {};
             // TNMap's own field names: DISTRICT ("1".."9"), NAME (the
             // sitting representative, e.g. "Representative Steve Cohen").
+            const fallbackLabel = p.DISTRICT ? `District ${p.DISTRICT}` : "";
             if (p.DISTRICT) {
-              layer.bindTooltip(`District ${p.DISTRICT}`, {
+              layer.bindTooltip(fallbackLabel, {
                 sticky: true,
                 direction: "auto",
                 className: "ecolens-boundary-tooltip",
               });
             }
-            attachBoundaryInteractivity(layer, congressionalBaseStyle);
+            attachBoundaryInteractivity(layer, congressionalBaseStyle, fallbackLabel);
           },
         });
         const countyBaseStyle = { color: "#9B9B9B", weight: 1.25, fillOpacity: 0.02 };
@@ -542,14 +645,15 @@ export default function SensorMap({
           onEachFeature: (feature: any, layer: any) => {
             const p = feature.properties ?? {};
             const label = p.BASENAME ?? p.NAME;
+            const fallbackLabel = label ? `${label} County` : "";
             if (label) {
-              layer.bindTooltip(`${label} County`, {
+              layer.bindTooltip(fallbackLabel, {
                 sticky: true,
                 direction: "auto",
                 className: "ecolens-boundary-tooltip",
               });
             }
-            attachBoundaryInteractivity(layer, countyBaseStyle);
+            attachBoundaryInteractivity(layer, countyBaseStyle, fallbackLabel);
           },
         });
         const zipBaseStyle = { color: "#99454A", weight: 1.5, dashArray: "2,4", fillOpacity: 0.02 };
@@ -559,14 +663,15 @@ export default function SensorMap({
           onEachFeature: (feature: any, layer: any) => {
             const p = feature.properties ?? {};
             const zip = p.ZCTA5 ?? p.BASENAME;
+            const fallbackLabel = zip ? `ZIP ${zip}` : "";
             if (zip) {
-              layer.bindTooltip(`ZIP ${zip}`, {
+              layer.bindTooltip(fallbackLabel, {
                 sticky: true,
                 direction: "auto",
                 className: "ecolens-boundary-tooltip",
               });
             }
-            attachBoundaryInteractivity(layer, zipBaseStyle);
+            attachBoundaryInteractivity(layer, zipBaseStyle, fallbackLabel);
           },
         });
 
@@ -1003,7 +1108,7 @@ export default function SensorMap({
 
     let cancelled = false;
     fetchBoundaryInfo(point.lat, point.lng).then((data) => {
-      if (!cancelled && data) setBoundaryInfo(data);
+      if (!cancelled && data) setBoundaryInfo(maskBoundaryInfo(data, designationPrefsRef.current));
     });
 
     return () => {
