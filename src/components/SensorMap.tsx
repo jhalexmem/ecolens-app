@@ -357,6 +357,12 @@ export default function SensorMap({
   const zipLayerRef = useRef<any>(null);
   const zipActiveRef = useRef(false);
   const zipDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The single boundary polygon (across all 3 layers above) currently
+  // "selected" via click — kept filled-in after the cursor leaves so the
+  // last-clicked area stays visually highlighted. Cleared/replaced whenever
+  // a different polygon is clicked. See the hover/click wiring below.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const selectedBoundaryLayerRef = useRef<any>(null);
   // True once the one-time "fit to all known points" has run (page load /
   // refresh). After that, selection changes pan to the selected point
   // instead of re-fitting the whole metro area.
@@ -443,34 +449,70 @@ export default function SensorMap({
         );
         windSourceNoteRef.current = createWindSourceNote(L);
 
-        // ── Boundary-line overlays: plain vector outlines, effectively no
-        // fill ─────────────────────────────────────────────────────────────
+        // ── Boundary-line overlays: vector outlines that fill in with their
+        // true shape on hover/selection ─────────────────────────────────────
         // Colors match TIGERweb's own default Census renderer for each layer,
         // so they read as "official" and stay visually distinct from the
         // wind (steel blue flecks) overlay.
         //
-        // fillOpacity is 0.02, not a true 0 — a fully transparent
+        // Base fillOpacity is 0.02, not a true 0 — a fully transparent
         // (fillOpacity: 0) polygon isn't "painted" as far as the browser's
         // hit-testing is concerned, so only its stroke would respond to
-        // hover/click, not its interior. A near-zero fill keeps the visual
+        // hover/click, not its interior. A near-zero fill keeps the resting
         // look identical (outline-only) while making the whole polygon area
-        // hoverable/clickable, which the tooltip-on-hover / click-anywhere-
-        // inside behavior below depends on.
-        // Shared click behavior for all three boundary layers below: rather
-        // than popping up just that one layer's own value, a click resolves
-        // and shows all three designations together (via the same bottom-
-        // left indicator the active-selection effect drives) — whichever of
-        // the three overlays happen to be toggled on at the time doesn't
-        // matter, since the lookup always re-derives all three server-side.
+        // hoverable/clickable.
+        //
+        // attachBoundaryInteractivity wires up the rest: hovering a polygon
+        // fills it in (with its own exact geometry — no approximation, since
+        // it's the same feature TIGERweb/TNMap returned) to make the area's
+        // real shape visible at a glance, and clicking "pins" that fill so it
+        // stays highlighted after the cursor leaves, until a different
+        // polygon (in any of the 3 layers) is clicked next.
+        const HOVER_FILL_OPACITY = 0.28;
+        const SELECTED_FILL_OPACITY = 0.42;
+
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const showAllBoundariesAt = (e: any) => {
-          fetchBoundaryInfo(e.latlng.lat, e.latlng.lng).then((data) => {
-            if (data) setBoundaryInfo(data);
+        const attachBoundaryInteractivity = (layer: any, baseStyle: Record<string, unknown>) => {
+          layer.on("mouseover", () => {
+            if (selectedBoundaryLayerRef.current !== layer) {
+              layer.setStyle({ fillOpacity: HOVER_FILL_OPACITY });
+            }
+            layer.bringToFront();
           });
+          layer.on("mouseout", () => {
+            if (selectedBoundaryLayerRef.current !== layer) {
+              layer.setStyle(baseStyle);
+            }
+          });
+          // Shared click behavior for all three boundary layers: rather than
+          // popping up just that one layer's own value, a click resolves and
+          // shows all three designations together (via the same bottom-left
+          // indicator the active-selection effect drives) — whichever of the
+          // three overlays happen to be toggled on at the time doesn't
+          // matter, since the lookup always re-derives all three server-side.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          layer.on("click", (e: any) => {
+            if (selectedBoundaryLayerRef.current && selectedBoundaryLayerRef.current !== layer) {
+              selectedBoundaryLayerRef.current.setStyle(
+                selectedBoundaryLayerRef.current.options.ecolensBaseStyle ?? baseStyle
+              );
+            }
+            selectedBoundaryLayerRef.current = layer;
+            layer.setStyle({ fillOpacity: SELECTED_FILL_OPACITY });
+            layer.bringToFront();
+            fetchBoundaryInfo(e.latlng.lat, e.latlng.lng).then((data) => {
+              if (data) setBoundaryInfo(data);
+            });
+          });
+          // Stash the base style on the layer itself so the click handler
+          // above can restore *any* previously-selected layer correctly,
+          // even one from a different boundary group with different colors.
+          layer.options.ecolensBaseStyle = baseStyle;
         };
 
+        const congressionalBaseStyle = { color: "#1E82C3", weight: 2, dashArray: "6,4", fillOpacity: 0.02 };
         congressionalLayerRef.current = L.geoJSON(undefined, {
-          style: { color: "#1E82C3", weight: 2, dashArray: "6,4", fillOpacity: 0.02 },
+          style: congressionalBaseStyle,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           onEachFeature: (feature: any, layer: any) => {
             const p = feature.properties ?? {};
@@ -483,11 +525,12 @@ export default function SensorMap({
                 className: "ecolens-boundary-tooltip",
               });
             }
-            layer.on("click", showAllBoundariesAt);
+            attachBoundaryInteractivity(layer, congressionalBaseStyle);
           },
         });
+        const countyBaseStyle = { color: "#9B9B9B", weight: 1.25, fillOpacity: 0.02 };
         countyLayerRef.current = L.geoJSON(undefined, {
-          style: { color: "#9B9B9B", weight: 1.25, fillOpacity: 0.02 },
+          style: countyBaseStyle,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           onEachFeature: (feature: any, layer: any) => {
             const p = feature.properties ?? {};
@@ -499,11 +542,12 @@ export default function SensorMap({
                 className: "ecolens-boundary-tooltip",
               });
             }
-            layer.on("click", showAllBoundariesAt);
+            attachBoundaryInteractivity(layer, countyBaseStyle);
           },
         });
+        const zipBaseStyle = { color: "#99454A", weight: 1.5, dashArray: "2,4", fillOpacity: 0.02 };
         zipLayerRef.current = L.geoJSON(undefined, {
-          style: { color: "#99454A", weight: 1.5, dashArray: "2,4", fillOpacity: 0.02 },
+          style: zipBaseStyle,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           onEachFeature: (feature: any, layer: any) => {
             const p = feature.properties ?? {};
@@ -515,7 +559,7 @@ export default function SensorMap({
                 className: "ecolens-boundary-tooltip",
               });
             }
-            layer.on("click", showAllBoundariesAt);
+            attachBoundaryInteractivity(layer, zipBaseStyle);
           },
         });
 
