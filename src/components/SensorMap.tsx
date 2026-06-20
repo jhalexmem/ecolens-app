@@ -291,15 +291,21 @@ function formatDesignations(data: BoundaryInfo, prefs: DesignationPrefs): string
 }
 
 /**
- * Small, always-visible control (top-right, under the layers control) where
- * the user picks which of the 3 designations — ZIP, county, congressional
- * district — get surfaced in the hover tooltip and the bottom-left
- * indicator. Lives in exactly one fixed spot rather than popping up at the
- * cursor or click point, so it never ends up competing on-screen with
- * whatever's currently under the cursor or just got clicked.
+ * Single, always-visible control (top-right) that is now the one place to
+ * manage the 3 boundary divisions: each checkbox both draws/removes that
+ * division's line overlay on the map AND decides whether it's surfaced in
+ * the hover tooltip and the bottom-left indicator — replacing what used to
+ * be split between Leaflet's own layers dropdown (line visibility) and this
+ * control (tooltip content). One control, one mental model: check it to see
+ * it everywhere, uncheck it to see it nowhere. Also the natural home for any
+ * future map-display toggles.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function createDesignationPrefsControl(L: any, prefs: DesignationPrefs, onChange: () => void) {
+function createDesignationPrefsControl(
+  L: any,
+  prefs: DesignationPrefs,
+  onToggle: (key: keyof DesignationPrefs, checked: boolean) => void
+) {
   const DesignationPrefsControl = L.Control.extend({
     options: { position: "topright" },
     onAdd() {
@@ -318,7 +324,7 @@ function createDesignationPrefsControl(L: any, prefs: DesignationPrefs, onChange
         input.checked = prefs[key];
         input.addEventListener("change", () => {
           prefs[key] = input.checked;
-          onChange();
+          onToggle(key, input.checked);
         });
         wrap.appendChild(input);
         wrap.appendChild(document.createTextNode(` ${text}`));
@@ -743,15 +749,6 @@ export default function SensorMap({
             windGridActiveRef.current = true;
             windSourceNoteRef.current?.addTo(mapRef.current);
             loadWindGrid();
-          } else if (e.name === "Congressional districts (TN)") {
-            congressionalActiveRef.current = true;
-            loadCongressionalDistricts();
-          } else if (e.name === "County lines") {
-            countyActiveRef.current = true;
-            loadCountyLines();
-          } else if (e.name === "ZIP code lines") {
-            zipActiveRef.current = true;
-            loadZipLines();
           }
         });
         mapRef.current.on("overlayremove", (e: { name: string }) => {
@@ -759,16 +756,39 @@ export default function SensorMap({
             windGridActiveRef.current = false;
             windGridDataRef.current = [];
             mapRef.current.removeControl(windSourceNoteRef.current);
-          } else if (e.name === "County lines") {
-            countyActiveRef.current = false;
-          } else if (e.name === "ZIP code lines") {
-            zipActiveRef.current = false;
-          } else if (e.name === "Congressional districts (TN)") {
-            // Only the "active" flag resets — the small, fixed TN dataset
-            // itself stays cached in the layer so toggling back on is instant.
-            congressionalActiveRef.current = false;
           }
         });
+
+        // The 3 boundary divisions (ZIP/county/district) are no longer in
+        // Leaflet's own layers dropdown — they're managed entirely by the
+        // "Show on map" control below, which needs to both add/remove each
+        // division's line layer and flip its activeRef (for the moveend
+        // pan-refetch logic just above) in one place.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const boundaryLayerConfig: Record<
+          keyof DesignationPrefs,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          { layerRef: { current: any }; activeRef: { current: boolean }; load: () => void }
+        > = {
+          zip: { layerRef: zipLayerRef, activeRef: zipActiveRef, load: loadZipLines },
+          county: { layerRef: countyLayerRef, activeRef: countyActiveRef, load: loadCountyLines },
+          district: {
+            layerRef: congressionalLayerRef,
+            activeRef: congressionalActiveRef,
+            load: loadCongressionalDistricts,
+          },
+        };
+
+        const setBoundaryLayerActive = (key: keyof DesignationPrefs, active: boolean) => {
+          const cfg = boundaryLayerConfig[key];
+          cfg.activeRef.current = active;
+          if (active) {
+            cfg.layerRef.current?.addTo(mapRef.current);
+            cfg.load();
+          } else if (cfg.layerRef.current) {
+            mapRef.current.removeLayer(cfg.layerRef.current);
+          }
+        };
         mapRef.current.on("moveend", () => {
           if (windGridActiveRef.current) {
             if (windGridDebounceRef.current) clearTimeout(windGridDebounceRef.current);
@@ -795,22 +815,28 @@ export default function SensorMap({
             {
               "Wind (speed + direction)": windLayerRef.current,
               "Wind pattern (area)": windFlowLayerRef.current,
-              "Congressional districts (TN)": congressionalLayerRef.current,
-              "County lines": countyLayerRef.current,
-              "ZIP code lines": zipLayerRef.current,
             },
             { position: "topright", collapsed: true }
           )
           .addTo(mapRef.current);
 
         // Fixed "Show on map" checkbox control (top-right, under the layers
-        // control) — the one and only place the user picks which of ZIP /
-        // county / district to surface. See attachBoundaryInteractivity above.
-        createDesignationPrefsControl(L, designationPrefsRef.current, () => {
+        // control) — the one and only place to manage ZIP/county/district:
+        // toggling a box draws or removes that division's lines AND decides
+        // whether it's surfaced in the hover tooltip/bottom-left indicator.
+        createDesignationPrefsControl(L, designationPrefsRef.current, (key, checked) => {
+          setBoundaryLayerActive(key, checked);
           if (lastBoundaryDataRef.current) {
             setBoundaryInfo(maskBoundaryInfo(lastBoundaryDataRef.current, designationPrefsRef.current));
           }
         }).addTo(mapRef.current);
+
+        // Prefs default to "all 3 on" — actually turn those 3 divisions on
+        // (lines drawn + pan-refetch wired up) to match what the control
+        // shows as checked right out of the gate.
+        (Object.keys(boundaryLayerConfig) as Array<keyof DesignationPrefs>).forEach((key) => {
+          if (designationPrefsRef.current[key]) setBoundaryLayerActive(key, true);
+        });
       }
 
       // Clear previous markers before redrawing
