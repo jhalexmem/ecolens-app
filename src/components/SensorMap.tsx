@@ -349,6 +349,7 @@ export default function SensorMap({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const congressionalLayerRef = useRef<any>(null);
   const congressionalLoadedRef = useRef(false);
+  const congressionalActiveRef = useRef(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const countyLayerRef = useRef<any>(null);
   const countyActiveRef = useRef(false);
@@ -484,12 +485,12 @@ export default function SensorMap({
               layer.setStyle(baseStyle);
             }
           });
-          // Shared click behavior for all three boundary layers: rather than
-          // popping up just that one layer's own value, a click resolves and
-          // shows all three designations together (via the same bottom-left
-          // indicator the active-selection effect drives) — whichever of the
-          // three overlays happen to be toggled on at the time doesn't
-          // matter, since the lookup always re-derives all three server-side.
+          // Shared click behavior for all three boundary layers: a click
+          // resolves all three designations server-side, then only the
+          // designations whose overlay is currently toggled on get shown —
+          // 3 layers on means all 3 labels, 2 on means 2 labels, etc. — via
+          // the same bottom-left indicator the active-selection effect
+          // drives.
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           layer.on("click", (e: any) => {
             if (selectedBoundaryLayerRef.current && selectedBoundaryLayerRef.current !== layer) {
@@ -501,7 +502,13 @@ export default function SensorMap({
             layer.setStyle({ fillOpacity: SELECTED_FILL_OPACITY });
             layer.bringToFront();
             fetchBoundaryInfo(e.latlng.lat, e.latlng.lng).then((data) => {
-              if (data) setBoundaryInfo(data);
+              if (!data) return;
+              setBoundaryInfo({
+                zip: zipActiveRef.current ? data.zip : null,
+                county: countyActiveRef.current ? data.county : null,
+                district: congressionalActiveRef.current ? data.district : null,
+                repName: congressionalActiveRef.current ? data.repName : null,
+              });
             });
           });
           // Stash the base style on the layer itself so the click handler
@@ -656,6 +663,7 @@ export default function SensorMap({
             windSourceNoteRef.current?.addTo(mapRef.current);
             loadWindGrid();
           } else if (e.name === "Congressional districts (TN)") {
+            congressionalActiveRef.current = true;
             loadCongressionalDistricts();
           } else if (e.name === "County lines") {
             countyActiveRef.current = true;
@@ -674,9 +682,11 @@ export default function SensorMap({
             countyActiveRef.current = false;
           } else if (e.name === "ZIP code lines") {
             zipActiveRef.current = false;
+          } else if (e.name === "Congressional districts (TN)") {
+            // Only the "active" flag resets — the small, fixed TN dataset
+            // itself stays cached in the layer so toggling back on is instant.
+            congressionalActiveRef.current = false;
           }
-          // Congressional districts: nothing to reset — the small, fixed TN
-          // dataset stays cached in the layer so toggling back on is instant.
         });
         mapRef.current.on("moveend", () => {
           if (windGridActiveRef.current) {
