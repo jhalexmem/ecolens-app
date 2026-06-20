@@ -24,6 +24,10 @@
   --radius-lg:  12px;
   --highlight:  #FF7A1A; /* hover/selected accent for sensor chips + map markers */
   --locate-blue: #0A84FF; /* "you are here" dot/cone + locate button, Apple Maps-style */
+  --facility-red:    #E2402E; /* footprint pulse cycle, stop 1 */
+  --facility-orange: #FF8C1A; /* footprint pulse cycle, stop 2 */
+  --facility-yellow: #FFD23F; /* footprint pulse cycle, stop 3 */
+  --facility-purple: #7F4FE0; /* property/parcel-line outline */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -312,4 +316,157 @@ img, svg, canvas {
 
 .ecolens-map .leaflet-top.leaflet-left .leaflet-control-zoom {
   margin-top: 44px;
+}
+
+/* ── Major-facilities overlay (Colossus I/II, MACROHARDRR, TVA Allen, MLGW
+   substations, water-recycling plant) ──────────────────────────────────── */
+/* Two outline styles per facility, drawn as Leaflet SVG <path> elements:
+   - .ecolens-facility-footprint: an approximate building-footprint outline
+     that cycles red → orange → yellow ("flash" mode), or sits as a solid
+     highlight orange when the user switches the control to "static".
+   - .ecolens-facility-property: a purple dotted approximate property/
+     parcel-line outline, always static (never pulses). */
+
+@keyframes ecolens-facility-pulse {
+  0%   { stroke: var(--facility-red); }
+  33%  { stroke: var(--facility-orange); }
+  66%  { stroke: var(--facility-yellow); }
+  100% { stroke: var(--facility-red); }
+}
+
+.ecolens-facility-footprint {
+  animation: ecolens-facility-pulse 3s linear infinite;
+}
+
+/* "Static" mode toggle: applied as a class on the Leaflet map container so a
+   single control can flip every footprint outline at once, without having
+   to reach into each individual path. */
+.ecolens-map.ecolens-facility-flash-off .ecolens-facility-footprint {
+  animation: none;
+  stroke: var(--highlight);
+}
+
+.ecolens-facility-property {
+  stroke: var(--facility-purple);
+}
+
+.ecolens-facility-tooltip {
+  background: rgba(255,255,255,0.94);
+  color: #1a1a18;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+.ecolens-facility-tooltip::before {
+  border-top-color: rgba(255,255,255,0.94);
+}
+
+.ecolens-facility-popup .leaflet-popup-content {
+  margin: 10px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  max-width: 230px;
+}
+
+.ecolens-facility-popup-title {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+
+.ecolens-facility-popup-address {
+  color: #5f5e5a;
+  margin-bottom: 6px;
+}
+
+.ecolens-facility-popup ul {
+  margin: 0 0 6px 14px;
+  padding: 0;
+}
+
+.ecolens-facility-popup li {
+  margin-bottom: 4px;
+}
+
+.ecolens-facility-popup-source {
+  color: #888780;
+  font-size: 10.5px;
+  font-style: italic;
+}
+
+.ecolens-facility-marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.95);
+  border: 2px solid var(--highlight);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* ── Facility outline control (flash / static toggle) ───────────────────── */
+
+.ecolens-facility-control {
+  background: rgba(255,255,255,0.94);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 9px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.ecolens-facility-control-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #5f5e5a;
+  white-space: nowrap;
+}
+
+.ecolens-facility-control-option {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1a1a18;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ecolens-facility-control-option input {
+  cursor: pointer;
+  margin: 0;
+}
+
+/* ── Major interstate highlight (I-40 / I-55 / I-240 / I-69) ────────────── */
+/* Shield-style label badges placed along each route, echoing (not copying)
+   the general green-and-white interstate shield convention used on US
+   highway signage and most mainstream road map products. */
+
+.ecolens-highway-shield {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 20px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #1A6B3C;
+  border: 1.5px solid #ffffff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.45);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
 }

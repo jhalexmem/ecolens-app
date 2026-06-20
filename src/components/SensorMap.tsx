@@ -11,6 +11,8 @@
 import { useEffect, useRef, useState } from "react";
 import "leaflet/dist/leaflet.css";
 import type { SensorReading, SourceSelection } from "@/types/ecolens";
+import { FACILITIES, FACILITY_CATEGORY_ICONS, rectAround } from "@/lib/facilities";
+import { HIGHWAYS } from "@/lib/highways";
 
 function escapeHtml(s: string): string {
   return s
@@ -353,6 +355,15 @@ const HIGHLIGHT = "#FF7A1A";
 // Leaflet-controlled inline styles, not just CSS classes).
 const LOCATE_BLUE = "#0A84FF";
 
+// Major-facilities overlay colors — keep in sync with --facility-orange and
+// --facility-purple in globals.css. The footprint outline's actual red→
+// orange→yellow pulse is driven by the .ecolens-facility-footprint CSS
+// animation (see globals.css), which overrides whatever stroke color
+// Leaflet paints initially — these are just that initial paint plus the
+// solid color used once the user switches to "static" mode.
+const FACILITY_HIGHLIGHT = "#FF8C1A";
+const FACILITY_PURPLE = "#7F4FE0";
+
 // Classic "locate me" glyph (ring + center dot + 4 compass ticks), drawn
 // entirely in currentColor so the button can flip between idle/following/
 // paused just by toggling a CSS class — no markup swap needed.
@@ -396,6 +407,179 @@ function createLocateControl(L: any, onClick: () => void) {
     },
   });
   return new LocateControl();
+}
+
+/**
+ * Small fixed control (top-right, stacking under "Show on map") that lets
+ * the user choose whether the major-facilities footprint outlines pulse
+ * red → orange → yellow, or sit still as a solid highlight-orange outline.
+ * Implemented as a single CSS class toggle on the Leaflet map container
+ * (ecolens-facility-flash-off — see globals.css) rather than reaching into
+ * each polygon individually.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createFacilityFlashControl(
+  L: any,
+  defaultFlashing: boolean,
+  onToggle: (flashing: boolean) => void
+) {
+  const FacilityFlashControl = L.Control.extend({
+    options: { position: "topright" },
+    onAdd() {
+      const container = L.DomUtil.create("div", "ecolens-facility-control");
+
+      const title = document.createElement("div");
+      title.className = "ecolens-facility-control-title";
+      title.textContent = "Facility outlines:";
+      container.appendChild(title);
+
+      const wrap = document.createElement("label");
+      wrap.className = "ecolens-facility-control-option";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = defaultFlashing;
+      input.addEventListener("change", () => onToggle(input.checked));
+      wrap.appendChild(input);
+      wrap.appendChild(document.createTextNode(" Flash"));
+      container.appendChild(wrap);
+
+      L.DomEvent.disableClickPropagation(container);
+      return container;
+    },
+  });
+  return new FacilityFlashControl();
+}
+
+/**
+ * Builds the "major facilities" overlay layer group: one approximate
+ * building-footprint polygon (pulsing red → orange → yellow via the
+ * .ecolens-facility-footprint CSS class) + one approximate purple dotted
+ * property-line polygon + one labeled marker per entry in FACILITIES
+ * (Colossus I/II, MACROHARDRR, the former Duke Energy site, the TVA Allen
+ * plant, both MLGW/TVA substations, and the xAI water-recycling plant).
+ * See src/lib/facilities.ts for full accuracy/sourcing notes on each site —
+ * every shape here is a best-effort rectangle sized from public square-
+ * footage/acreage figures, not a traced building or parcel outline (no
+ * Overpass/GIS access is reachable from this app's build environment).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createFacilitiesLayer(L: any) {
+  const group = L.layerGroup();
+
+  for (const facility of FACILITIES) {
+    const footprintCoords = rectAround(facility.center, ...facility.footprintSize);
+    const propertyCoords = rectAround(facility.center, ...facility.propertySize);
+
+    const footprint = L.polygon(footprintCoords, {
+      className: "ecolens-facility-footprint",
+      color: FACILITY_HIGHLIGHT,
+      weight: 2.5,
+      fillOpacity: 0.05,
+      fillColor: FACILITY_HIGHLIGHT,
+    });
+    const property = L.polygon(propertyCoords, {
+      className: "ecolens-facility-property",
+      color: FACILITY_PURPLE,
+      weight: 2,
+      dashArray: "4,7",
+      fillOpacity: 0,
+    });
+
+    const accuracyNote =
+      facility.centerAccuracy === "approximate"
+        ? "Location and outlines are best-effort approximations — no precise public parcel/footprint data was reachable."
+        : "Center geocoded from a public record; outlines are still best-effort approximations (no traced building/parcel data reachable).";
+
+    const popupHtml =
+      `<div class="ecolens-facility-popup">` +
+      `<div class="ecolens-facility-popup-title">${escapeHtml(facility.name)}</div>` +
+      `<div class="ecolens-facility-popup-address">${escapeHtml(facility.address)}</div>` +
+      `<ul>${facility.details.map((d) => `<li>${escapeHtml(d)}</li>`).join("")}</ul>` +
+      `<div>${mapLinksHtml(facility.center[0], facility.center[1])}</div>` +
+      `<div class="ecolens-facility-popup-source">${escapeHtml(accuracyNote)} ${escapeHtml(facility.sourceNote)}</div>` +
+      `</div>`;
+
+    footprint.bindTooltip(escapeHtml(facility.shortLabel), {
+      className: "ecolens-facility-tooltip",
+      sticky: true,
+    });
+    footprint.bindPopup(popupHtml, { className: "ecolens-facility-popup", maxWidth: 260 });
+
+    property.bindTooltip(`${escapeHtml(facility.shortLabel)} — approx. property line`, {
+      className: "ecolens-facility-tooltip",
+      sticky: true,
+    });
+    property.bindPopup(popupHtml, { className: "ecolens-facility-popup", maxWidth: 260 });
+
+    const icon = L.divIcon({
+      className: "ecolens-facility-marker",
+      html: FACILITY_CATEGORY_ICONS[facility.category],
+      iconSize: [22, 22],
+      iconAnchor: [11, 11],
+    });
+    const marker = L.marker(facility.center, { icon, zIndexOffset: 400 });
+    marker.bindTooltip(escapeHtml(facility.shortLabel), {
+      className: "ecolens-facility-tooltip",
+      direction: "top",
+      offset: [0, -10],
+    });
+    marker.bindPopup(popupHtml, { className: "ecolens-facility-popup", maxWidth: 260 });
+
+    group.addLayer(property);
+    group.addLayer(footprint);
+    group.addLayer(marker);
+  }
+
+  return group;
+}
+
+/**
+ * Builds the "major highways" overlay: a dark casing line + a bright
+ * highlight line on top for each interstate in HIGHWAYS, plus a couple of
+ * green-and-white shield label badges per route. Geometry is hand-plotted
+ * from general knowledge of the Memphis interstate layout (see
+ * src/lib/highways.ts) — Overpass/OSM and a GitHub-hosted GeoJSON mirror are
+ * both unreachable from this app's build environment, so there is no live
+ * highway-geometry source available to trace from.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createHighwaysLayer(L: any) {
+  const group = L.layerGroup();
+
+  for (const hwy of HIGHWAYS) {
+    const casing = L.polyline(hwy.path, {
+      color: "#1A1A18",
+      weight: 7,
+      opacity: 0.35,
+      lineCap: "round",
+      lineJoin: "round",
+      interactive: false,
+    });
+    const highlight = L.polyline(hwy.path, {
+      color: "#FFD23F",
+      weight: 4,
+      opacity: 0.95,
+      lineCap: "round",
+      lineJoin: "round",
+    });
+    highlight.bindTooltip(escapeHtml(hwy.label), { className: "ecolens-facility-tooltip", sticky: true });
+    group.addLayer(casing);
+    group.addLayer(highlight);
+
+    for (const idx of hwy.labelAt) {
+      const pt = hwy.path[idx];
+      if (!pt) continue;
+      const shieldIcon = L.divIcon({
+        className: "ecolens-highway-shield",
+        html: escapeHtml(hwy.label),
+        iconSize: [30, 20],
+        iconAnchor: [15, 10],
+      });
+      group.addLayer(L.marker(pt, { icon: shieldIcon, zIndexOffset: 300, interactive: false }));
+    }
+  }
+
+  return group;
 }
 
 const DEFAULT_CENTER: [number, number] = [35.1495, -90.049]; // Memphis, TN
@@ -472,6 +656,16 @@ export default function SensorMap({
   // switch to a contrasting yellow over Satellite imagery. Updated via the
   // map's 'baselayerchange' event, fired by the layers control.
   const activeBaseLayerRef = useRef<string>("Street");
+  // Major-facilities overlay (Colossus I/II, MACROHARDRR, former Duke Energy
+  // site, TVA Allen plant, MLGW/TVA substations, xAI water-recycling plant)
+  // + major-interstate highlight — both on by default. facilityFlashRef
+  // tracks whether the footprint outlines are currently pulsing (true) or
+  // static (false); see createFacilityFlashControl.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const facilitiesLayerRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const highwaysLayerRef = useRef<any>(null);
+  const facilityFlashRef = useRef<boolean>(true);
   // Boundary-line overlays (congressional districts, counties, ZIP/ZCTA) —
   // plain L.geoJSON vector outlines, no fill, sourced server-side from the
   // Census Bureau's TIGERweb service (see /api/boundaries/*). Tennessee's 9
@@ -878,6 +1072,15 @@ export default function SensorMap({
           }
         });
 
+        // ── Major facilities (Colossus I/II, MACROHARDRR, former Duke Energy
+        // site, TVA Allen plant, MLGW/TVA substations, xAI water-recycling
+        // plant) + major-interstate highlight — both placed on the map and
+        // on by default; see createFacilitiesLayer/createHighwaysLayer above.
+        facilitiesLayerRef.current = createFacilitiesLayer(L);
+        facilitiesLayerRef.current.addTo(mapRef.current);
+        highwaysLayerRef.current = createHighwaysLayer(L);
+        highwaysLayerRef.current.addTo(mapRef.current);
+
         L.control
           .layers(
             {
@@ -887,6 +1090,8 @@ export default function SensorMap({
               Light: lightLayer,
             },
             {
+              "Major facilities": facilitiesLayerRef.current,
+              "Major highways": highwaysLayerRef.current,
               "Wind (speed + direction)": windLayerRef.current,
               "Wind pattern (area)": windFlowLayerRef.current,
             },
@@ -911,6 +1116,17 @@ export default function SensorMap({
         (Object.keys(boundaryLayerConfig) as Array<keyof DesignationPrefs>).forEach((key) => {
           if (designationPrefsRef.current[key]) setBoundaryLayerActive(key, true);
         });
+
+        // Facility-outline flash/static toggle (top-right, under "Show on
+        // map") — flips a CSS class on the map container; see globals.css's
+        // .ecolens-facility-flash-off override.
+        mapRef.current
+          .getContainer()
+          .classList.toggle("ecolens-facility-flash-off", !facilityFlashRef.current);
+        createFacilityFlashControl(L, facilityFlashRef.current, (flashing) => {
+          facilityFlashRef.current = flashing;
+          mapRef.current?.getContainer().classList.toggle("ecolens-facility-flash-off", !flashing);
+        }).addTo(mapRef.current);
 
         // ── "You are here" locator (blue dot, bottom-right button) ──────────
         const updateLocateButton = () => {
