@@ -187,48 +187,6 @@ img, svg, canvas {
   outline: none;
 }
 
-/* ── Designation-prefs control (top-right, under the layers control) ────── */
-/* A fixed, always-visible control — NOT a popup — where the user picks which
-   of ZIP / county / congressional-district to surface in the hover tooltip
-   and the bottom-left indicator. Living in one fixed spot (rather than
-   popping up at the cursor or click point) keeps it from ever competing
-   on-screen with whatever's currently under the cursor or just got clicked. */
-
-.ecolens-designation-control {
-  background: rgba(255,255,255,0.94);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 9px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 6px;
-}
-
-.ecolens-designation-control-title {
-  font-size: 11px;
-  font-weight: 600;
-  color: #5f5e5a;
-  white-space: nowrap;
-}
-
-.ecolens-designation-control-checkbox {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #1a1a18;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.ecolens-designation-control-checkbox input {
-  cursor: pointer;
-  margin: 0;
-}
-
 /* ── "You are here" locator (bottom-right button + on-map blue dot) ─────── */
 /* Apple/Google Maps-style current-location indicator: a small pulsing blue
    dot + translucent accuracy circle drawn directly on the map (a Leaflet
