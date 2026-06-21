@@ -1146,10 +1146,21 @@ export default function SensorMap({
                 : null;
             if (heading != null) updateConeRotation(heading);
           };
-          const eventName =
-            "ondeviceorientationabsolute" in window ? "deviceorientationabsolute" : "deviceorientation";
-          window.addEventListener(eventName, handler);
-          locateOrientationCleanupRef.current = () => window.removeEventListener(eventName, handler);
+          // Listen on BOTH event names instead of feature-detecting one via
+          // "ondeviceorientationabsolute" in window: that property's mere
+          // presence doesn't guarantee it's the event actually dispatched
+          // (browser versions and devtools sensor-override panels are
+          // inconsistent about which of the two they fire), so picking just
+          // one risks silently listening on the wrong one. Attaching to both
+          // is harmless — addEventListener on a name nothing ever dispatches
+          // simply never fires — and whichever one the environment uses
+          // still drives the cone.
+          window.addEventListener("deviceorientation", handler);
+          window.addEventListener("deviceorientationabsolute", handler);
+          locateOrientationCleanupRef.current = () => {
+            window.removeEventListener("deviceorientation", handler);
+            window.removeEventListener("deviceorientationabsolute", handler);
+          };
         };
 
         const requestOrientationIfAvailable = () => {
