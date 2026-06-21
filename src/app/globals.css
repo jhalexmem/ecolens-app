@@ -282,15 +282,15 @@ img, svg, canvas {
   position: absolute;
   left: 50%;
   bottom: 0;
-  width: 90px;
-  height: 80px;
-  margin-left: -45px;
+  width: 45px;
+  height: 40px;
+  margin-left: -22.5px;
   transform-origin: 50% 100%;
   background: conic-gradient(
     from -38deg at 50% 100%,
     rgba(10, 132, 255, 0) 0deg,
-    rgba(10, 132, 255, 0.45) 8deg,
-    rgba(10, 132, 255, 0.45) 68deg,
+    rgba(10, 132, 255, 0.675) 8deg,
+    rgba(10, 132, 255, 0.675) 68deg,
     rgba(10, 132, 255, 0) 76deg
   );
   pointer-events: none;

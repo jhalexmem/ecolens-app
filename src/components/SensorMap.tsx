@@ -377,15 +377,15 @@ const LOCATE_ICON_SVG =
   "</svg>";
 
 /**
- * "Locate me" button (bottom-right, Apple/Google Maps idiom): tap to start
- * showing your live position as a pulsing blue dot + accuracy circle and
- * center the map on it; tap again while it's actively following turns it
- * off entirely. If you drag the map away while it's following, it quietly
- * drops into a "paused" state instead — the dot keeps updating, but the map
- * stops auto-panning, so it never fights your own panning/zooming (the same
- * "don't fight the user for control of the view" principle behind dropping
- * the old click-popup/pinned-fill boundary behavior). Tap once more from
- * "paused" to re-center and resume following.
+ * "Locate me" button (bottom-right, Apple/Google Maps idiom): tap to center
+ * the map on your live position, shown as a pulsing blue dot + accuracy
+ * circle plus a heading "flashlight" cone once compass/GPS-course data is
+ * available. Tap again to pause — the GPS watch and the flashlight stop,
+ * but the dot stays pinned exactly where it was rather than disappearing
+ * (the same "don't fight the user for control of the view" principle behind
+ * dropping the old click-popup/pinned-fill boundary behavior). Dragging the
+ * map away manually pauses it the same way. Tap once more to re-center and
+ * resume tracking.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function createLocateControl(L: any, onClick: () => void) {
@@ -671,11 +671,18 @@ export default function SensorMap({
     key: keyof DesignationPrefs;
   } | null>(null);
   // "You are here" locator (bottom-right button) — Apple Maps-style blue dot
-  // + accuracy circle, with an optional heading cone once compass/GPS-course
-  // data is available. "off" | "follow" (map auto-pans to each update) |
-  // "paused" (dot still updates; map stays put because the user dragged
-  // away). See createLocateControl above and its wiring further below.
-  const locateStateRef = useRef<"off" | "follow" | "paused">("off");
+  // + accuracy circle, with an optional heading cone ("flashlight") once
+  // compass/GPS-course data is available. Two-click toggle:
+  // "off" (never started, no marker on the map) →
+  // "tracking" (1st click: recenters the map, live GPS watch running, cone
+  // shown once heading data arrives) →
+  // "pinned" (2nd click, or the user drags the map away manually: GPS watch
+  // and cone both stop, but the dot + accuracy circle stay frozen right
+  // where they were) → clicking again restarts "tracking" from there.
+  // "off" is only re-entered via stopLocating, on a geolocation error (no
+  // valid position left to pin). See createLocateControl above and its
+  // wiring further below.
+  const locateStateRef = useRef<"off" | "tracking" | "pinned">("off");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const locateMarkerRef = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1135,8 +1142,8 @@ export default function SensorMap({
         const updateLocateButton = () => {
           const btn = locateButtonElRef.current;
           if (!btn) return;
-          btn.classList.toggle("ecolens-locate-active", locateStateRef.current === "follow");
-          btn.classList.toggle("ecolens-locate-paused", locateStateRef.current === "paused");
+          btn.classList.toggle("ecolens-locate-active", locateStateRef.current === "tracking");
+          btn.classList.toggle("ecolens-locate-paused", locateStateRef.current === "pinned");
         };
 
         const showLocateError = (message: string) => {
@@ -1238,7 +1245,7 @@ export default function SensorMap({
             updateConeRotation(heading);
           }
 
-          if (locateStateRef.current === "follow") {
+          if (locateStateRef.current === "tracking") {
             if (!locateInitialFitDoneRef.current) {
               locateInitialFitDoneRef.current = true;
               mapRef.current.setView(latlng, Math.max(mapRef.current.getZoom(), 15));
@@ -1248,6 +1255,16 @@ export default function SensorMap({
           }
         };
 
+        const hideLocateCone = () => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const el = (locateMarkerRef.current as any)?.getElement?.();
+          const cone = el?.querySelector(".ecolens-locate-cone") as HTMLElement | null;
+          if (cone) cone.style.display = "none";
+        };
+
+        // Full reset back to "off" — only used when geolocation itself
+        // errors out (permission denied / unavailable), since at that point
+        // there's no valid position left worth pinning.
         const stopLocating = () => {
           if (locateWatchIdRef.current != null) {
             navigator.geolocation.clearWatch(locateWatchIdRef.current);
@@ -1269,15 +1286,39 @@ export default function SensorMap({
           }
         };
 
+        // The "2nd click" (or a manual drag away from the tracked spot):
+        // stop the live GPS watch and hide the flashlight cone, but leave
+        // the dot + accuracy circle exactly where they are — pinned, not
+        // removed. Clicking the button again resumes tracking from there.
+        const pauseLocating = () => {
+          if (locateWatchIdRef.current != null) {
+            navigator.geolocation.clearWatch(locateWatchIdRef.current);
+            locateWatchIdRef.current = null;
+          }
+          locateOrientationCleanupRef.current();
+          locateOrientationCleanupRef.current = () => {};
+          locateStateRef.current = "pinned";
+          updateLocateButton();
+          hideLocateCone();
+        };
+
         const startLocating = () => {
           if (!navigator.geolocation) {
             showLocateError("Location isn't supported in this browser.");
             return;
           }
-          locateStateRef.current = "follow";
-          locateInitialFitDoneRef.current = false;
+          locateStateRef.current = "tracking";
           updateLocateButton();
           requestOrientationIfAvailable();
+          if (lastLocatePositionRef.current) {
+            // Resuming from a pinned dot — recenter immediately instead of
+            // waiting on a fresh GPS fix; the next real position update
+            // will pan smoothly from here rather than jumping.
+            locateInitialFitDoneRef.current = true;
+            mapRef.current.setView(lastLocatePositionRef.current, Math.max(mapRef.current.getZoom(), 15));
+          } else {
+            locateInitialFitDoneRef.current = false;
+          }
           locateWatchIdRef.current = navigator.geolocation.watchPosition(
             handlePosition,
             (err) => {
@@ -1290,25 +1331,19 @@ export default function SensorMap({
         };
 
         const handleLocateClick = () => {
-          if (locateStateRef.current === "off") {
-            startLocating();
-          } else if (locateStateRef.current === "follow") {
-            stopLocating();
+          if (locateStateRef.current === "tracking") {
+            pauseLocating();
           } else {
-            locateStateRef.current = "follow";
-            updateLocateButton();
-            if (lastLocatePositionRef.current) {
-              mapRef.current.panTo(lastLocatePositionRef.current, { animate: true });
-            }
+            startLocating();
           }
         };
 
-        // Dragging the map away while following drops us into "paused"
-        // instead of fighting the pan on the next position update.
+        // Dragging the map away while tracking pins the dot right where it
+        // was, same as a 2nd click — avoids fighting the user's manual pan
+        // on the next position update.
         mapRef.current.on("dragstart", () => {
-          if (locateStateRef.current === "follow") {
-            locateStateRef.current = "paused";
-            updateLocateButton();
+          if (locateStateRef.current === "tracking") {
+            pauseLocating();
           }
         });
 
