@@ -24,9 +24,6 @@
   --radius-lg:  12px;
   --highlight:  #FF7A1A; /* hover/selected accent for sensor chips + map markers */
   --locate-blue: #0A84FF; /* "you are here" dot/cone + locate button, Apple Maps-style */
-  --facility-red:    #E2402E; /* footprint pulse cycle, stop 1 */
-  --facility-orange: #FF8C1A; /* footprint pulse cycle, stop 2 */
-  --facility-yellow: #FFD23F; /* footprint pulse cycle, stop 3 */
   --facility-purple: #7F4FE0; /* property/parcel-line outline */
 }
 
@@ -320,20 +317,15 @@ img, svg, canvas {
 
 /* ── Major-facilities overlay (Colossus I/II, MACROHARDRR, TVA Allen, MLGW
    substations, water-recycling plant) ──────────────────────────────────── */
-/* Two outline styles per facility, drawn as Leaflet SVG <path> elements:
-   - .ecolens-facility-footprint: an approximate building-footprint outline
-     that cycles red → orange → yellow ("flash" mode), or sits as a solid
-     highlight orange when the user switches the control to "static".
+/* Two static outline styles per facility, drawn as Leaflet SVG <path>
+   elements (both colored directly via Leaflet's `color`/`fillColor` style
+   options, not CSS, for the same SVG-presentation-attribute reasons as
+   HIGHLIGHT/LOCATE_BLUE in SensorMap.tsx):
+   - .ecolens-facility-footprint: an approximate building-footprint outline.
+     An earlier version animated this red→orange→yellow with a flash/static
+     toggle; removed per user feedback.
    - .ecolens-facility-property: a purple dotted approximate property/
-     parcel-line outline, always static (never pulses). */
-
-/* The red→orange→yellow "flash" pulse is driven directly from JS
-   (setInterval + layer.setStyle() in SensorMap.tsx) rather than a CSS
-   @keyframes animation — a CSS animation targeting this class didn't
-   reliably override Leaflet's own setAttribute()-painted stroke/fill, so the
-   outline never visibly flashed. setStyle() sidesteps that entirely. The
-   "static" toggle is likewise just a setStyle() call back to a solid color,
-   not a class swap. */
+     parcel-line outline. */
 
 .ecolens-facility-property {
   stroke: var(--facility-purple);
@@ -399,43 +391,6 @@ img, svg, canvas {
   box-shadow: 0 1px 3px rgba(0,0,0,0.4);
   font-size: 12px;
   line-height: 1;
-}
-
-/* ── Facility outline control (flash / static toggle) ───────────────────── */
-
-.ecolens-facility-control {
-  background: rgba(255,255,255,0.94);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 9px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 6px;
-}
-
-.ecolens-facility-control-title {
-  font-size: 11px;
-  font-weight: 600;
-  color: #5f5e5a;
-  white-space: nowrap;
-}
-
-.ecolens-facility-control-option {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #1a1a18;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.ecolens-facility-control-option input {
-  cursor: pointer;
-  margin: 0;
 }
 
 /* ── Major interstate highlight (I-40 / I-55 / I-240 / I-69) ────────────── */

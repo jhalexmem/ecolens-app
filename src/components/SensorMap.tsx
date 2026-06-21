@@ -355,28 +355,11 @@ const HIGHLIGHT = "#FF7A1A";
 // Leaflet-controlled inline styles, not just CSS classes).
 const LOCATE_BLUE = "#0A84FF";
 
-// Major-facilities overlay colors — keep in sync with --facility-red/
-// orange/yellow/purple in globals.css.
-//
-// The footprint outline's red→orange→yellow pulse is driven directly from
-// JS (setInterval + layer.setStyle below) rather than a CSS animation on
-// the SVG path's `stroke`/`fill` presentation attributes. A first version
-// used a CSS @keyframes animation, but that depends on the browser
-// honoring a CSS rule overriding presentation attributes Leaflet sets via
-// setAttribute — which didn't reliably take effect, so the outline never
-// visibly flashed. Driving it from setStyle() sidesteps that entirely.
-//
-// Step rate is capped well under the WCAG "three flashes per second"
-// photosensitive-seizure safety threshold — true strobing at ~15-20Hz (as
-// literally requested) sits in the most dangerous range for photosensitive
-// epilepsy, so instead this steps fast enough to read as an obvious, brisk
-// pulse (~3 color-steps/sec, ~1 full red-orange-yellow cycle/sec) without
-// crossing that line.
-const FACILITY_RED = "#E2402E";
-const FACILITY_ORANGE = "#FF8C1A";
-const FACILITY_YELLOW = "#FFD23F";
-const FACILITY_PULSE_COLORS = [FACILITY_RED, FACILITY_ORANGE, FACILITY_YELLOW];
-const FACILITY_PULSE_STEP_MS = 350;
+// Major-facilities overlay colors — static outlines, no animation (the
+// flashing version was tried and then dropped per user feedback). Keep
+// FACILITY_PURPLE in sync with --facility-purple in globals.css (the
+// property/parcel line); the footprint outline reuses the general
+// highlight orange under its own name for clarity at the call site.
 const FACILITY_HIGHLIGHT = "#FF8C1A";
 const FACILITY_PURPLE = "#7F4FE0";
 
@@ -426,65 +409,23 @@ function createLocateControl(L: any, onClick: () => void) {
 }
 
 /**
- * Small fixed control (top-right, stacking under "Show on map") that lets
- * the user choose whether the major-facilities footprint outlines pulse
- * red → orange → yellow, or sit still as a solid highlight-orange outline.
- * The actual color change is driven by startFacilityPulse/stopFacilityPulse
- * (setInterval + layer.setStyle() on every footprint polygon) — this control
- * just reports the checkbox state via onToggle.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function createFacilityFlashControl(
-  L: any,
-  defaultFlashing: boolean,
-  onToggle: (flashing: boolean) => void
-) {
-  const FacilityFlashControl = L.Control.extend({
-    options: { position: "topright" },
-    onAdd() {
-      const container = L.DomUtil.create("div", "ecolens-facility-control");
-
-      const title = document.createElement("div");
-      title.className = "ecolens-facility-control-title";
-      title.textContent = "Facility outlines:";
-      container.appendChild(title);
-
-      const wrap = document.createElement("label");
-      wrap.className = "ecolens-facility-control-option";
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      input.checked = defaultFlashing;
-      input.addEventListener("change", () => onToggle(input.checked));
-      wrap.appendChild(input);
-      wrap.appendChild(document.createTextNode(" Flash"));
-      container.appendChild(wrap);
-
-      L.DomEvent.disableClickPropagation(container);
-      return container;
-    },
-  });
-  return new FacilityFlashControl();
-}
-
-/**
- * Builds the "major facilities" overlay layer group: one approximate
- * building-footprint polygon (pulsing red → orange → yellow via the
- * .ecolens-facility-footprint CSS class) + one approximate purple dotted
- * property-line polygon + one labeled marker per entry in FACILITIES
- * (Colossus I/II, MACROHARDRR, the former Duke Energy site, the TVA Allen
- * plant, both MLGW/TVA substations, and the xAI water-recycling plant).
- * See src/lib/facilities.ts for full accuracy/sourcing notes on each site —
- * every shape here is a best-effort rectangle sized from public square-
- * footage/acreage figures, not a traced building or parcel outline (no
- * Overpass/GIS access is reachable from this app's build environment).
+ * Builds the "major facilities" overlay layer group: one approximate,
+ * static building-footprint polygon (highlight orange) + one approximate
+ * purple dotted property-line polygon + one labeled marker per entry in
+ * FACILITIES (Colossus I/II, MACROHARDRR, the former Duke Energy site, the
+ * TVA Allen plant, both MLGW/TVA substations, and the xAI water-recycling
+ * plant). See src/lib/facilities.ts for full accuracy/sourcing notes on each
+ * site — every shape here is a best-effort rectangle sized from public
+ * square-footage/acreage figures, not a traced building or parcel outline
+ * (no Overpass/GIS access is reachable from this app's build environment).
  *
- * `footprintLayers` is an out-param: every footprint polygon (the one that
- * pulses) gets pushed onto it as it's created, so the caller can drive the
- * red→orange→yellow pulse directly via setStyle() on a timer — see
- * FACILITY_PULSE_COLORS / startFacilityPulse below.
+ * An earlier version pulsed the footprint outline red→orange→yellow with a
+ * flash/static toggle; removed per user feedback in favor of a plain static
+ * outline — keeping the door open to refine the outline geometry/accuracy
+ * later without the animation complicating things.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function createFacilitiesLayer(L: any, footprintLayers: any[]) {
+function createFacilitiesLayer(L: any) {
   const group = L.layerGroup();
 
   for (const facility of FACILITIES) {
@@ -498,7 +439,6 @@ function createFacilitiesLayer(L: any, footprintLayers: any[]) {
       fillOpacity: 0.08,
       fillColor: FACILITY_HIGHLIGHT,
     });
-    footprintLayers.push(footprint);
     const property = L.polygon(propertyCoords, {
       className: "ecolens-facility-property",
       color: FACILITY_PURPLE,
@@ -680,20 +620,12 @@ export default function SensorMap({
   const activeBaseLayerRef = useRef<string>("Street");
   // Major-facilities overlay (Colossus I/II, MACROHARDRR, former Duke Energy
   // site, TVA Allen plant, MLGW/TVA substations, xAI water-recycling plant)
-  // + major-interstate highlight — both on by default. facilityFlashRef
-  // tracks whether the footprint outlines are currently pulsing (true) or
-  // static (false); see createFacilityFlashControl.
+  // + major-interstate highlight — off by default, toggled via the layers
+  // control, same as the other optional overlays.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const facilitiesLayerRef = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const highwaysLayerRef = useRef<any>(null);
-  const facilityFlashRef = useRef<boolean>(true);
-  // Every footprint polygon (populated by createFacilitiesLayer) + the
-  // setInterval driving their red→orange→yellow color cycle — see
-  // startFacilityPulse/stopFacilityPulse below.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const facilityFootprintLayersRef = useRef<any[]>([]);
-  const facilityPulseIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Boundary-line overlays (congressional districts, counties, ZIP/ZCTA) —
   // plain L.geoJSON vector outlines, no fill, sourced server-side from the
   // Census Bureau's TIGERweb service (see /api/boundaries/*). Tennessee's 9
@@ -713,15 +645,31 @@ export default function SensorMap({
   const zipActiveRef = useRef(false);
   const zipDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // User's choice of which designations to surface on hover/click, set via
-  // the fixed "Show on map" control (top-right). Defaults to "all 3" — a ref
-  // (not state) since it's read inside imperative Leaflet event handlers and
-  // doesn't itself need to trigger a React re-render when it changes.
-  const designationPrefsRef = useRef<DesignationPrefs>({ zip: true, county: true, district: true });
+  // the fixed "Show on map" control (top-right). Defaults to "none" — every
+  // optional overlay starts off until the user opts in, per user feedback
+  // ("default to Street map, nothing else pre-selected"). A ref (not state)
+  // since it's read inside imperative Leaflet event handlers and doesn't
+  // itself need to trigger a React re-render when it changes.
+  const designationPrefsRef = useRef<DesignationPrefs>({ zip: false, county: false, district: false });
   // Most recent raw (unmasked) BoundaryInfo resolved from hover/click/
   // selection — kept so toggling a checkbox in the prefs control can
   // immediately re-mask and refresh the bottom-left indicator without a
   // fresh server round-trip.
   const lastBoundaryDataRef = useRef<BoundaryInfo | null>(null);
+  // The single boundary polygon currently "pinned" by a click (stays
+  // darkened after the cursor leaves; a second click on the same polygon
+  // un-pins it). At most one division/layer is pinned at a time — clicking
+  // a different polygon un-pins whichever was pinned before. baseStyle is
+  // stored alongside the layer so it can be reverted without needing to
+  // look it up again; key records which division ("zip"/"county"/
+  // "district") it belongs to, so the pan-triggered county/zip reload
+  // functions can invalidate a stale pin before replacing their layers.
+  const pinnedBoundaryRef = useRef<{
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    layer: any;
+    baseStyle: Record<string, unknown>;
+    key: keyof DesignationPrefs;
+  } | null>(null);
   // "You are here" locator (bottom-right button) — Apple Maps-style blue dot
   // + accuracy circle, with an optional heading cone once compass/GPS-course
   // data is available. "off" | "follow" (map auto-pans to each update) |
@@ -818,7 +766,10 @@ export default function SensorMap({
         streetLayer.addTo(mapRef.current);
 
         // ── Wind direction/speed overlay (toggleable, see below) ─────────────
-        windLayerRef.current = L.layerGroup().addTo(mapRef.current);
+        // Built but not added to the map yet — off by default like every
+        // other optional overlay, until the user checks it on in the layers
+        // control below.
+        windLayerRef.current = L.layerGroup();
 
         // ── Area-wide wind-pattern overlay: animated flow field + speed wash ─
         // Not added to the map yet — starts unchecked, since enabling it
@@ -849,26 +800,35 @@ export default function SensorMap({
         // fills it in (with its own exact geometry — no approximation, since
         // it's the same feature TIGERweb/TNMap returned) to make the area's
         // real shape visible at a glance, and the fill reverts the instant
-        // the cursor leaves — nothing stays highlighted once you've moved on
-        // to a different spot.
+        // the cursor leaves — UNLESS that polygon is currently "pinned" (see
+        // below), in which case it stays darkened.
+        //
+        // Click toggles a pin (pinnedBoundaryRef, declared above): the first
+        // click on a polygon darkens it and keeps it darkened even once the
+        // cursor moves away; clicking that SAME polygon again un-darkens it.
+        // Clicking a different polygon un-pins whatever was pinned before
+        // (reverting it to its own base style) and pins the new one instead
+        // — so at most one polygon is ever pinned at a time.
         //
         // Hover and click both resolve all 3 designations for that point
         // server-side, then filter to whichever the user has checked on in
         // the fixed "Show on map" control (designationPrefsRef, top-right,
-        // defaulting to all 3) — a deliberate user choice, independent of
+        // defaulting to none) — a deliberate user choice, independent of
         // which overlay lines happen to be drawn on the map at the time.
-        // Hover updates the sticky tooltip that follows the cursor; click
-        // additionally pins the result into the bottom-left indicator and
+        // Hover updates the sticky tooltip that follows the cursor; a
+        // pinning click additionally updates the bottom-left indicator and
         // forces that same tooltip open (useful on touch, where there's no
         // hover) — neither opens a separate popup, so there's only ever one
-        // thing on screen telling you what's there.
+        // thing on screen telling you what's there. An un-pinning click
+        // clears the bottom-left indicator back to empty.
         const HOVER_FILL_OPACITY = 0.28;
 
         const attachBoundaryInteractivity = (
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           layer: any,
           baseStyle: Record<string, unknown>,
-          fallbackLabel: string
+          fallbackLabel: string,
+          key: keyof DesignationPrefs
         ) => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           layer.on("mouseover", (e: any) => {
@@ -882,10 +842,31 @@ export default function SensorMap({
             });
           });
           layer.on("mouseout", () => {
+            // A pinned polygon stays darkened after the cursor leaves; it
+            // only reverts when the user clicks it again (or clicks a
+            // different polygon, which un-pins this one explicitly below).
+            if (pinnedBoundaryRef.current?.layer === layer) return;
             layer.setStyle(baseStyle);
           });
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           layer.on("click", (e: any) => {
+            const pinned = pinnedBoundaryRef.current;
+            if (pinned?.layer === layer) {
+              // Second click on the same polygon: un-pin it.
+              layer.setStyle(baseStyle);
+              layer.closeTooltip();
+              pinnedBoundaryRef.current = null;
+              setBoundaryInfo(null);
+              return;
+            }
+            // Clicking a different polygon: revert whatever was pinned
+            // before, then pin this one.
+            if (pinned) {
+              pinned.layer.setStyle(pinned.baseStyle);
+            }
+            layer.setStyle({ fillOpacity: HOVER_FILL_OPACITY });
+            layer.bringToFront();
+            pinnedBoundaryRef.current = { layer, baseStyle, key };
             fetchBoundaryInfo(e.latlng.lat, e.latlng.lng).then((data) => {
               if (!data) return;
               lastBoundaryDataRef.current = data;
@@ -913,7 +894,7 @@ export default function SensorMap({
                 className: "ecolens-boundary-tooltip",
               });
             }
-            attachBoundaryInteractivity(layer, congressionalBaseStyle, fallbackLabel);
+            attachBoundaryInteractivity(layer, congressionalBaseStyle, fallbackLabel, "district");
           },
         });
         const countyBaseStyle = { color: "#9B9B9B", weight: 1.25, fillOpacity: 0.02 };
@@ -931,7 +912,7 @@ export default function SensorMap({
                 className: "ecolens-boundary-tooltip",
               });
             }
-            attachBoundaryInteractivity(layer, countyBaseStyle, fallbackLabel);
+            attachBoundaryInteractivity(layer, countyBaseStyle, fallbackLabel, "county");
           },
         });
         const zipBaseStyle = { color: "#99454A", weight: 1.5, dashArray: "2,4", fillOpacity: 0.02 };
@@ -949,7 +930,7 @@ export default function SensorMap({
                 className: "ecolens-boundary-tooltip",
               });
             }
-            attachBoundaryInteractivity(layer, zipBaseStyle, fallbackLabel);
+            attachBoundaryInteractivity(layer, zipBaseStyle, fallbackLabel, "zip");
           },
         });
 
@@ -1011,6 +992,11 @@ export default function SensorMap({
             .then((res) => (res.ok ? res.json() : null))
             .then((geojson) => {
               if (!geojson) return;
+              // A pinned county polygon is about to be replaced by a fresh
+              // Leaflet layer object (clearLayers + addData) — drop the
+              // stale reference rather than leave it pointing at a
+              // detached layer.
+              if (pinnedBoundaryRef.current?.key === "county") pinnedBoundaryRef.current = null;
               countyLayerRef.current?.clearLayers();
               countyLayerRef.current?.addData(geojson);
             })
@@ -1032,6 +1018,8 @@ export default function SensorMap({
             .then((res) => (res.ok ? res.json() : null))
             .then((geojson) => {
               if (!geojson) return;
+              // Same stale-pin guard as loadCountyLines above.
+              if (pinnedBoundaryRef.current?.key === "zip") pinnedBoundaryRef.current = null;
               zipLayerRef.current?.clearLayers();
               zipLayerRef.current?.addData(geojson);
             })
@@ -1102,13 +1090,12 @@ export default function SensorMap({
 
         // ── Major facilities (Colossus I/II, MACROHARDRR, former Duke Energy
         // site, TVA Allen plant, MLGW/TVA substations, xAI water-recycling
-        // plant) + major-interstate highlight — both placed on the map and
-        // on by default; see createFacilitiesLayer/createHighwaysLayer above.
-        facilityFootprintLayersRef.current = [];
-        facilitiesLayerRef.current = createFacilitiesLayer(L, facilityFootprintLayersRef.current);
-        facilitiesLayerRef.current.addTo(mapRef.current);
+        // plant) + major-interstate highlight — built but not added to the
+        // map yet; off by default like every other optional overlay, until
+        // the user checks it on in the layers control below. See
+        // createFacilitiesLayer/createHighwaysLayer above.
+        facilitiesLayerRef.current = createFacilitiesLayer(L);
         highwaysLayerRef.current = createHighwaysLayer(L);
-        highwaysLayerRef.current.addTo(mapRef.current);
 
         L.control
           .layers(
@@ -1139,51 +1126,10 @@ export default function SensorMap({
           }
         }).addTo(mapRef.current);
 
-        // Prefs default to "all 3 on" — actually turn those 3 divisions on
-        // (lines drawn + pan-refetch wired up) to match what the control
-        // shows as checked right out of the gate.
-        (Object.keys(boundaryLayerConfig) as Array<keyof DesignationPrefs>).forEach((key) => {
-          if (designationPrefsRef.current[key]) setBoundaryLayerActive(key, true);
-        });
-
-        // Facility-outline flash/static toggle (top-right, under "Show on
-        // map") — directly drives each footprint polygon's color via
-        // setStyle() on a timer (see FACILITY_PULSE_COLORS/FACILITY_PULSE_STEP_MS
-        // above), rather than a CSS animation, so it reliably takes effect.
-        const startFacilityPulse = () => {
-          if (facilityPulseIntervalRef.current) return;
-          let step = 0;
-          facilityPulseIntervalRef.current = setInterval(() => {
-            step = (step + 1) % FACILITY_PULSE_COLORS.length;
-            const color = FACILITY_PULSE_COLORS[step];
-            facilityFootprintLayersRef.current.forEach((layer) => {
-              layer.setStyle({ color, fillColor: color });
-            });
-          }, FACILITY_PULSE_STEP_MS);
-        };
-        const stopFacilityPulse = () => {
-          if (facilityPulseIntervalRef.current) {
-            clearInterval(facilityPulseIntervalRef.current);
-            facilityPulseIntervalRef.current = null;
-          }
-          facilityFootprintLayersRef.current.forEach((layer) => {
-            layer.setStyle({ color: FACILITY_HIGHLIGHT, fillColor: FACILITY_HIGHLIGHT });
-          });
-        };
-
-        if (facilityFlashRef.current) {
-          startFacilityPulse();
-        } else {
-          stopFacilityPulse();
-        }
-        createFacilityFlashControl(L, facilityFlashRef.current, (flashing) => {
-          facilityFlashRef.current = flashing;
-          if (flashing) {
-            startFacilityPulse();
-          } else {
-            stopFacilityPulse();
-          }
-        }).addTo(mapRef.current);
+        // Prefs default to "all 3 off" — nothing pre-selected on load. The
+        // user opts in via the checkboxes above, which call
+        // setBoundaryLayerActive themselves through the callback passed to
+        // createDesignationPrefsControl.
 
         // ── "You are here" locator (blue dot, bottom-right button) ──────────
         const updateLocateButton = () => {
@@ -1609,10 +1555,6 @@ export default function SensorMap({
         navigator.geolocation.clearWatch(locateWatchIdRef.current);
       }
       locateOrientationCleanupRef.current();
-      if (facilityPulseIntervalRef.current) {
-        clearInterval(facilityPulseIntervalRef.current);
-        facilityPulseIntervalRef.current = null;
-      }
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
