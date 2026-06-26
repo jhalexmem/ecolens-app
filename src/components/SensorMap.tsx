@@ -586,6 +586,14 @@ export default function SensorMap({
   const facilitiesLayerRef = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const highwaysLayerRef = useRef<any>(null);
+  // MATA bus routes overlay — real street-by-street route geometry sourced
+  // server-side from MATA's own published GTFS static feed (see lib/gtfs.ts
+  // and /api/transit/mata-routes), unlike HIGHWAYS above. Off by default;
+  // fetched once on first toggle, same fixed-set-fetched-once idiom as the
+  // 3 legislative-district layers below.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mataRoutesLayerRef = useRef<any>(null);
+  const mataRoutesLoadedRef = useRef(false);
   // Boundary-line overlays (U.S. House/TN House/TN Senate districts,
   // counties, ZIP/ZCTA) — plain L.geoJSON vector outlines, no fill, sourced
   // server-side from TNMap (the 3 legislative-district layers) or the
@@ -953,6 +961,32 @@ export default function SensorMap({
           },
         });
 
+        // MATA bus routes — plain colored lines (each route's own official
+        // GTFS route_color), with a hover tooltip showing the route number +
+        // name. Not a "designation" like the 5 boundary layers above, so no
+        // attachBoundaryInteractivity/click-to-pin — just a label on hover,
+        // same idiom as the highway shield labels.
+        mataRoutesLayerRef.current = L.geoJSON(undefined, {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          style: (feature: any) => ({
+            color: feature?.properties?.color || "#3A8FCE",
+            weight: 3,
+            opacity: 0.85,
+          }),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          onEachFeature: (feature: any, layer: any) => {
+            const p = feature.properties ?? {};
+            const label = [p.route_short_name, p.route_long_name].filter(Boolean).join(" — ");
+            if (label) {
+              layer.bindTooltip(escapeHtml(label), {
+                sticky: true,
+                direction: "auto",
+                className: "ecolens-facility-tooltip",
+              });
+            }
+          },
+        });
+
         mapRef.current.on("baselayerchange", (e: { name: string }) => {
           activeBaseLayerRef.current = e.name;
         });
@@ -1023,6 +1057,23 @@ export default function SensorMap({
               tnSenateLoadedRef.current = true;
               tnSenateLayerRef.current?.clearLayers();
               tnSenateLayerRef.current?.addData(geojson);
+            })
+            .catch(() => {
+              // Best-effort overlay — silently skip on network error.
+            });
+        };
+
+        // Same fetch-once idiom as the 3 legislative-district loaders above —
+        // MATA's route network is a fixed set, no bbox/pan dependency.
+        const loadMataRoutes = () => {
+          if (mataRoutesLoadedRef.current) return;
+          fetch("/api/transit/mata-routes")
+            .then((res) => (res.ok ? res.json() : null))
+            .then((geojson) => {
+              if (!geojson) return;
+              mataRoutesLoadedRef.current = true;
+              mataRoutesLayerRef.current?.clearLayers();
+              mataRoutesLayerRef.current?.addData(geojson);
             })
             .catch(() => {
               // Best-effort overlay — silently skip on network error.
@@ -1147,20 +1198,29 @@ export default function SensorMap({
         };
 
         mapRef.current.on("overlayadd", (e: { name: string }) => {
-          if (e.name === "Wind pattern (area)") {
+          if (e.name === "Wind Pattern") {
             windGridActiveRef.current = true;
             windSourceNoteRef.current?.addTo(mapRef.current);
             loadWindGrid();
+            return;
+          }
+          if (e.name === "MATA Bus Routes") {
+            loadMataRoutes();
             return;
           }
           const key = boundaryOverlayNames[e.name];
           if (key) setBoundaryLayerActive(key, true);
         });
         mapRef.current.on("overlayremove", (e: { name: string }) => {
-          if (e.name === "Wind pattern (area)") {
+          if (e.name === "Wind Pattern") {
             windGridActiveRef.current = false;
             windGridDataRef.current = [];
             mapRef.current.removeControl(windSourceNoteRef.current);
+            return;
+          }
+          if (e.name === "MATA Bus Routes") {
+            // Nothing to clean up — mataRoutesLoadedRef keeps the fetched
+            // data cached so re-checking the box doesn't refetch.
             return;
           }
           const key = boundaryOverlayNames[e.name];
@@ -1202,8 +1262,9 @@ export default function SensorMap({
             {
               "Major facilities": facilitiesLayerRef.current,
               "Major highways": highwaysLayerRef.current,
+              "MATA Bus Routes": mataRoutesLayerRef.current,
               "Wind (speed + direction)": windLayerRef.current,
-              "Wind pattern (area)": windFlowLayerRef.current,
+              "Wind Pattern": windFlowLayerRef.current,
               "ZIP codes": zipLayerRef.current,
               Counties: countyLayerRef.current,
               "U.S. House Dist": congressionalLayerRef.current,
