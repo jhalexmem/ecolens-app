@@ -131,6 +131,23 @@ img, svg, canvas {
   pointer-events: none;
 }
 
+/* Same `max-width: 100%` collapse as above, but hitting Leaflet's own SVG
+   renderer this time instead of one of our canvases. Leaflet's bundled CSS
+   already patches this for its default pane (`.leaflet-overlay-pane svg {
+   max-width: none !important }` — a fix upstream added for a conflicting
+   Joomla! rule), but that selector is hard-coded to the default overlay
+   pane only. Our dedicated `mataRoutesPane` (added so bus routes always
+   win the hit-test over the boundary-polygon layers, see SensorMap.tsx)
+   gets its own lazily-created SVG renderer that isn't covered by that
+   selector, so it was inheriting the global 100% max-width instead — and
+   since the pane <div> itself is a zero-width shrink-to-fit container (same
+   as every other Leaflet pane), that resolved to an actual 0px width,
+   silently killing the whole layer despite every path being present and
+   correctly styled in the DOM. */
+.leaflet-mataRoutes-pane svg {
+  max-width: none;
+}
+
 /* ── Area-wind data-source note (bottom-right, shown alongside the wind
    legend while the area wind layer is active) ──────────────────────────── */
 
