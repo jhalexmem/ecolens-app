@@ -1,10 +1,12 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import RegisterServiceWorker from "@/components/RegisterServiceWorker";
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
+  themeColor: "#639922",
 };
 
 export const metadata: Metadata = {
@@ -18,6 +20,14 @@ export const metadata: Metadata = {
     description: "Real-time AQI, pollutants, and weather for any US zip code.",
     type: "website",
   },
+  // Lets iOS Safari's "Add to Home Screen" launch EcoLens full-screen with
+  // no Safari chrome, using src/app/apple-icon.png as the home-screen icon.
+  // Next auto-injects the corresponding apple-mobile-web-app-* meta tags.
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "EcoLens",
+  },
 };
 
 export default function RootLayout({
@@ -27,7 +37,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        {children}
+        <RegisterServiceWorker />
+      </body>
     </html>
   );
 }
