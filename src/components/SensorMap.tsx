@@ -721,6 +721,18 @@ export default function SensorMap({
           doubleClickZoom: true,
         });
 
+        // A dedicated pane, stacked just above the default overlayPane (400),
+        // for the MATA bus routes layer. The 5 boundary polygons below live
+        // in overlayPane and call layer.bringToFront() on hover/click so
+        // their fill (intentionally clickable across its whole area, see
+        // comment further down) sits on top of whatever else is in that
+        // pane — which otherwise swallows clicks meant for a bus route
+        // running through that same polygon. A separate, higher-z pane
+        // means bus routes always win the hit-test regardless of which
+        // boundary layer most recently brought itself to front.
+        mapRef.current.createPane("mataRoutesPane");
+        mapRef.current.getPane("mataRoutesPane")!.style.zIndex = "405";
+
         // ── Selectable base layers (all free, no API key required) ───────────
         const streetLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
           attribution:
@@ -974,6 +986,7 @@ export default function SensorMap({
             color: feature?.properties?.color || "#3A8FCE",
             weight: MATA_BASE_WEIGHT,
             opacity: 0.85,
+            pane: "mataRoutesPane",
           }),
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           onEachFeature: (feature: any, layer: any) => {
@@ -1005,7 +1018,7 @@ export default function SensorMap({
             const coords: [number, number][] = feature.geometry.coordinates;
             const hitArea = L.polyline(
               coords.map(([lng, lat]: [number, number]) => [lat, lng]),
-              { color: "#000000", weight: 20, opacity: 0 }
+              { color: "#000000", weight: 20, opacity: 0, pane: "mataRoutesPane" }
             );
             hitArea.bindTooltip(tooltipText, {
               sticky: true,
