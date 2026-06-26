@@ -243,6 +243,10 @@ export interface BoundaryInfo {
   county: string | null;
   district: string | null;
   repName: string | null;
+  tnHouseDistrict: string | null;
+  tnHouseRepName: string | null;
+  tnSenateDistrict: string | null;
+  tnSenateRepName: string | null;
 }
 
 /**
@@ -262,15 +266,18 @@ async function fetchBoundaryInfo(lat: number, lng: number): Promise<BoundaryInfo
   }
 }
 
-// Which of the 3 designations the user wants surfaced on hover/click — set
-// via the ZIP/Counties/Congressional-districts checkboxes in Leaflet's own
-// layers control (see boundaryOverlayNames + setBoundaryLayerActive further
-// below). Defaults to "all off" until the user checks a box; the choice
-// persists across subsequent hovers/clicks until changed again.
+// Which of the 5 designations the user wants surfaced on hover/click — set
+// via the ZIP/Counties/U.S. House Dist/TN House Dist/TN Senate Dist
+// checkboxes in Leaflet's own layers control (see boundaryOverlayNames +
+// setBoundaryLayerActive further below). Defaults to "all off" until the
+// user checks a box; the choice persists across subsequent hovers/clicks
+// until changed again.
 export interface DesignationPrefs {
   zip: boolean;
   county: boolean;
   district: boolean;
+  tnHouse: boolean;
+  tnSenate: boolean;
 }
 
 function maskBoundaryInfo(data: BoundaryInfo, prefs: DesignationPrefs): BoundaryInfo {
@@ -279,6 +286,10 @@ function maskBoundaryInfo(data: BoundaryInfo, prefs: DesignationPrefs): Boundary
     county: prefs.county ? data.county : null,
     district: prefs.district ? data.district : null,
     repName: prefs.district ? data.repName : null,
+    tnHouseDistrict: prefs.tnHouse ? data.tnHouseDistrict : null,
+    tnHouseRepName: prefs.tnHouse ? data.tnHouseRepName : null,
+    tnSenateDistrict: prefs.tnSenate ? data.tnSenateDistrict : null,
+    tnSenateRepName: prefs.tnSenate ? data.tnSenateRepName : null,
   };
 }
 
@@ -287,6 +298,8 @@ function formatDesignations(data: BoundaryInfo, prefs: DesignationPrefs): string
     prefs.zip && data.zip ? `ZIP ${data.zip}` : null,
     prefs.county && data.county ? `${data.county} County` : null,
     prefs.district && data.district ? `Congressional District ${data.district}` : null,
+    prefs.tnHouse && data.tnHouseDistrict ? `TN House District ${data.tnHouseDistrict}` : null,
+    prefs.tnSenate && data.tnSenateDistrict ? `TN Senate District ${data.tnSenateDistrict}` : null,
   ].filter((p): p is string => Boolean(p));
   return parts.length ? parts.join(" · ") : null;
 }
@@ -573,16 +586,25 @@ export default function SensorMap({
   const facilitiesLayerRef = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const highwaysLayerRef = useRef<any>(null);
-  // Boundary-line overlays (congressional districts, counties, ZIP/ZCTA) —
-  // plain L.geoJSON vector outlines, no fill, sourced server-side from the
-  // Census Bureau's TIGERweb service (see /api/boundaries/*). Tennessee's 9
-  // congressional districts are a small fixed set fetched once on toggle;
-  // county and ZIP lines are bbox-scoped and refetch on pan like the
-  // wind/AQI grids above.
+  // Boundary-line overlays (U.S. House/TN House/TN Senate districts,
+  // counties, ZIP/ZCTA) — plain L.geoJSON vector outlines, no fill, sourced
+  // server-side from TNMap (the 3 legislative-district layers) or the
+  // Census Bureau's TIGERweb service (county/ZIP) — see /api/boundaries/*.
+  // The 3 legislative-district layers are small fixed sets (9/99/33
+  // districts) fetched once on toggle; county and ZIP lines are bbox-scoped
+  // and refetch on pan like the wind/AQI grids above.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const congressionalLayerRef = useRef<any>(null);
   const congressionalLoadedRef = useRef(false);
   const congressionalActiveRef = useRef(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tnHouseLayerRef = useRef<any>(null);
+  const tnHouseLoadedRef = useRef(false);
+  const tnHouseActiveRef = useRef(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tnSenateLayerRef = useRef<any>(null);
+  const tnSenateLoadedRef = useRef(false);
+  const tnSenateActiveRef = useRef(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const countyLayerRef = useRef<any>(null);
   const countyActiveRef = useRef(false);
@@ -592,13 +614,19 @@ export default function SensorMap({
   const zipActiveRef = useRef(false);
   const zipDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // User's choice of which designations to surface on hover/click, set via
-  // the ZIP/Counties/Congressional-districts checkboxes in Leaflet's own
-  // layers control (top-right). Defaults to "none" — every optional overlay
-  // starts off until the user opts in, per user feedback ("default to Street
-  // map, nothing else pre-selected"). A ref (not state) since it's read
-  // inside imperative Leaflet event handlers and doesn't itself need to
-  // trigger a React re-render when it changes.
-  const designationPrefsRef = useRef<DesignationPrefs>({ zip: false, county: false, district: false });
+  // the ZIP/Counties/U.S. House Dist/TN House Dist/TN Senate Dist checkboxes
+  // in Leaflet's own layers control (top-right). Defaults to "none" — every
+  // optional overlay starts off until the user opts in, per user feedback
+  // ("default to Street map, nothing else pre-selected"). A ref (not state)
+  // since it's read inside imperative Leaflet event handlers and doesn't
+  // itself need to trigger a React re-render when it changes.
+  const designationPrefsRef = useRef<DesignationPrefs>({
+    zip: false,
+    county: false,
+    district: false,
+    tnHouse: false,
+    tnSenate: false,
+  });
   // Most recent raw (unmasked) BoundaryInfo resolved from hover/click/
   // selection — kept so toggling a checkbox in the prefs control can
   // immediately re-mask and refresh the bottom-left indicator without a
@@ -652,17 +680,12 @@ export default function SensorMap({
   const initialFitDoneRef = useRef(false);
   const prevSelectedKeyRef = useRef<string | null>(null);
   const [expanded, setExpanded] = useState(false);
-  // Floating ZIP/county/congressional-district label (bottom-left) — a
-  // point-in-polygon lookup for whichever location is currently active.
-  // Independent of the toggleable boundary-line overlays above, which only
-  // load their data once the user switches them on; this label is meant to
-  // always reflect wherever the dashboard is currently focused.
-  const [boundaryInfo, setBoundaryInfo] = useState<{
-    zip: string | null;
-    county: string | null;
-    district: string | null;
-    repName: string | null;
-  } | null>(null);
+  // Floating ZIP/county/district label (bottom-left) — a point-in-polygon
+  // lookup for whichever location is currently active. Independent of the
+  // toggleable boundary-line overlays above, which only load their data
+  // once the user switches them on; this label is meant to always reflect
+  // wherever the dashboard is currently focused.
+  const [boundaryInfo, setBoundaryInfo] = useState<BoundaryInfo | null>(null);
   // Transient error text (e.g. "Location permission denied") shown near the
   // locate button; auto-clears itself after a few seconds.
   const [locateError, setLocateError] = useState<string | null>(null);
@@ -853,6 +876,46 @@ export default function SensorMap({
             attachBoundaryInteractivity(layer, congressionalBaseStyle, fallbackLabel, "district");
           },
         });
+        const tnHouseBaseStyle = { color: "#1D9E75", weight: 1.5, dashArray: "4,3", fillOpacity: 0.02 };
+        tnHouseLayerRef.current = L.geoJSON(undefined, {
+          style: tnHouseBaseStyle,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          onEachFeature: (feature: any, layer: any) => {
+            const p = feature.properties ?? {};
+            // TNMap's own field names: DISTRICT ("1".."99"), NAME (the
+            // sitting state representative, e.g. "Representative John
+            // Crawford").
+            const fallbackLabel = p.DISTRICT ? `TN House District ${p.DISTRICT}` : "";
+            if (p.DISTRICT) {
+              layer.bindTooltip(fallbackLabel, {
+                sticky: true,
+                direction: "auto",
+                className: "ecolens-boundary-tooltip",
+              });
+            }
+            attachBoundaryInteractivity(layer, tnHouseBaseStyle, fallbackLabel, "tnHouse");
+          },
+        });
+        const tnSenateBaseStyle = { color: "#C0392B", weight: 1.5, dashArray: "1,4", fillOpacity: 0.02 };
+        tnSenateLayerRef.current = L.geoJSON(undefined, {
+          style: tnSenateBaseStyle,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          onEachFeature: (feature: any, layer: any) => {
+            const p = feature.properties ?? {};
+            // Same field schema as House/Congressional above. NAME here is
+            // the sitting state senator, e.g. "Senator Adam Lowe" (district
+            // 5's lieutenant governor seat reads "Lt. Gov. Randy McNally").
+            const fallbackLabel = p.DISTRICT ? `TN Senate District ${p.DISTRICT}` : "";
+            if (p.DISTRICT) {
+              layer.bindTooltip(fallbackLabel, {
+                sticky: true,
+                direction: "auto",
+                className: "ecolens-boundary-tooltip",
+              });
+            }
+            attachBoundaryInteractivity(layer, tnSenateBaseStyle, fallbackLabel, "tnSenate");
+          },
+        });
         const countyBaseStyle = { color: "#9B9B9B", weight: 1.25, fillOpacity: 0.02 };
         countyLayerRef.current = L.geoJSON(undefined, {
           style: countyBaseStyle,
@@ -933,6 +996,39 @@ export default function SensorMap({
             });
         };
 
+        // Same fixed-set-fetched-once idiom as loadCongressionalDistricts —
+        // TN's 99 House and 33 Senate districts are both fixed statewide
+        // sets with no bbox/pan dependency.
+        const loadTnHouseDistricts = () => {
+          if (tnHouseLoadedRef.current) return;
+          fetch("/api/boundaries/tn-house")
+            .then((res) => (res.ok ? res.json() : null))
+            .then((geojson) => {
+              if (!geojson) return;
+              tnHouseLoadedRef.current = true;
+              tnHouseLayerRef.current?.clearLayers();
+              tnHouseLayerRef.current?.addData(geojson);
+            })
+            .catch(() => {
+              // Best-effort overlay — silently skip on network error.
+            });
+        };
+
+        const loadTnSenateDistricts = () => {
+          if (tnSenateLoadedRef.current) return;
+          fetch("/api/boundaries/tn-senate")
+            .then((res) => (res.ok ? res.json() : null))
+            .then((geojson) => {
+              if (!geojson) return;
+              tnSenateLoadedRef.current = true;
+              tnSenateLayerRef.current?.clearLayers();
+              tnSenateLayerRef.current?.addData(geojson);
+            })
+            .catch(() => {
+              // Best-effort overlay — silently skip on network error.
+            });
+        };
+
         // Same bbox-on-viewport idiom as loadWindGrid, hitting the Census
         // Bureau's TIGERweb boundary service instead.
         const loadCountyLines = () => {
@@ -984,13 +1080,14 @@ export default function SensorMap({
             });
         };
 
-        // The 3 boundary divisions (ZIP/county/district) now live in
-        // Leaflet's own layers control alongside every other overlay (added
-        // to that control further below) — checking/unchecking a box there
-        // fires the same overlayadd/overlayremove events as any other
-        // layer. boundaryLayerConfig + setBoundaryLayerActive is the one
-        // place that responds: draws/removes that division's lines, flips
-        // its activeRef (for the moveend pan-refetch logic just below), AND
+        // The 5 boundary divisions (ZIP/county/U.S. House/TN House/TN
+        // Senate) now live in Leaflet's own layers control alongside every
+        // other overlay (added to that control further below) —
+        // checking/unchecking a box there fires the same
+        // overlayadd/overlayremove events as any other layer.
+        // boundaryLayerConfig + setBoundaryLayerActive is the one place
+        // that responds: draws/removes that division's lines, flips its
+        // activeRef (for the moveend pan-refetch logic just below), AND
         // keeps designationPrefsRef in sync, so checking a box also makes
         // that division eligible for the hover tooltip/bottom-left
         // indicator — one checkbox, one mental model, nothing to manage in
@@ -1008,14 +1105,26 @@ export default function SensorMap({
             activeRef: congressionalActiveRef,
             load: loadCongressionalDistricts,
           },
+          tnHouse: {
+            layerRef: tnHouseLayerRef,
+            activeRef: tnHouseActiveRef,
+            load: loadTnHouseDistricts,
+          },
+          tnSenate: {
+            layerRef: tnSenateLayerRef,
+            activeRef: tnSenateActiveRef,
+            load: loadTnSenateDistricts,
+          },
         };
-        // Maps the layers control's own display names for these 3 overlays
+        // Maps the layers control's own display names for these 5 overlays
         // back to a DesignationPrefs key, so the overlayadd/overlayremove
         // handlers right below can dispatch to boundaryLayerConfig generically.
         const boundaryOverlayNames: Record<string, keyof DesignationPrefs> = {
           "ZIP codes": "zip",
           Counties: "county",
-          "Congressional districts": "district",
+          "U.S. House Dist": "district",
+          "TN House Dist": "tnHouse",
+          "TN Senate Dist": "tnSenate",
         };
 
         const setBoundaryLayerActive = (key: keyof DesignationPrefs, active: boolean) => {
@@ -1097,7 +1206,9 @@ export default function SensorMap({
               "Wind pattern (area)": windFlowLayerRef.current,
               "ZIP codes": zipLayerRef.current,
               Counties: countyLayerRef.current,
-              "Congressional districts": congressionalLayerRef.current,
+              "U.S. House Dist": congressionalLayerRef.current,
+              "TN House Dist": tnHouseLayerRef.current,
+              "TN Senate Dist": tnSenateLayerRef.current,
             },
             { position: "topright", collapsed: true }
           )
@@ -1664,7 +1775,12 @@ export default function SensorMap({
         }}
         aria-label="Map of live portable air-quality sensors"
       />
-      {boundaryInfo && (boundaryInfo.zip || boundaryInfo.county || boundaryInfo.district) && (
+      {boundaryInfo &&
+        (boundaryInfo.zip ||
+          boundaryInfo.county ||
+          boundaryInfo.district ||
+          boundaryInfo.tnHouseDistrict ||
+          boundaryInfo.tnSenateDistrict) && (
         <div
           style={{
             position: "absolute",
@@ -1687,6 +1803,8 @@ export default function SensorMap({
             boundaryInfo.zip ? `ZIP ${boundaryInfo.zip}` : null,
             boundaryInfo.county ? `${boundaryInfo.county} County` : null,
             boundaryInfo.district ? `Congressional District ${boundaryInfo.district}` : null,
+            boundaryInfo.tnHouseDistrict ? `TN House District ${boundaryInfo.tnHouseDistrict}` : null,
+            boundaryInfo.tnSenateDistrict ? `TN Senate District ${boundaryInfo.tnSenateDistrict}` : null,
           ]
             .filter(Boolean)
             .join(" · ")}
