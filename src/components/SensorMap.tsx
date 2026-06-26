@@ -962,28 +962,63 @@ export default function SensorMap({
         });
 
         // MATA bus routes — plain colored lines (each route's own official
-        // GTFS route_color), with a hover tooltip showing the route number +
-        // name. Not a "designation" like the 5 boundary layers above, so no
-        // attachBoundaryInteractivity/click-to-pin — just a label on hover,
-        // same idiom as the highway shield labels.
+        // GTFS route_color), with a hover/tap tooltip showing the route
+        // number + name. Not a "designation" like the 5 boundary layers
+        // above, so no attachBoundaryInteractivity/click-to-pin — just a
+        // label on hover, same idiom as the highway shield labels.
+        const MATA_BASE_WEIGHT = 4;
+        const MATA_HOVER_WEIGHT = 8;
         mataRoutesLayerRef.current = L.geoJSON(undefined, {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           style: (feature: any) => ({
             color: feature?.properties?.color || "#3A8FCE",
-            weight: 3,
+            weight: MATA_BASE_WEIGHT,
             opacity: 0.85,
           }),
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           onEachFeature: (feature: any, layer: any) => {
             const p = feature.properties ?? {};
             const label = [p.route_short_name, p.route_long_name].filter(Boolean).join(" — ");
-            if (label) {
-              layer.bindTooltip(escapeHtml(label), {
-                sticky: true,
-                direction: "auto",
-                className: "ecolens-facility-tooltip",
-              });
-            }
+            if (!label) return;
+
+            const tooltipText = escapeHtml(label);
+            layer.bindTooltip(tooltipText, {
+              sticky: true,
+              direction: "auto",
+              className: "ecolens-facility-tooltip",
+            });
+
+            const highlight = () => layer.setStyle({ weight: MATA_HOVER_WEIGHT });
+            const unhighlight = () => layer.setStyle({ weight: MATA_BASE_WEIGHT });
+            layer.on("mouseover", highlight);
+            layer.on("mouseout", unhighlight);
+            layer.on("click", () => {
+              highlight();
+              layer.openTooltip();
+            });
+
+            // The visible line itself is only a few px wide — too thin to
+            // reliably tap on a phone. Lay an invisible, much fatter copy of
+            // the same path on top purely to widen the clickable/tappable
+            // area; it shares the same tooltip text and highlight behavior,
+            // so a near-miss tap still surfaces the route number.
+            const coords: [number, number][] = feature.geometry.coordinates;
+            const hitArea = L.polyline(
+              coords.map(([lng, lat]: [number, number]) => [lat, lng]),
+              { color: "#000000", weight: 20, opacity: 0 }
+            );
+            hitArea.bindTooltip(tooltipText, {
+              sticky: true,
+              direction: "auto",
+              className: "ecolens-facility-tooltip",
+            });
+            hitArea.on("mouseover", highlight);
+            hitArea.on("mouseout", unhighlight);
+            hitArea.on("click", () => {
+              highlight();
+              hitArea.openTooltip();
+            });
+            mataRoutesLayerRef.current?.addLayer(hitArea);
           },
         });
 
