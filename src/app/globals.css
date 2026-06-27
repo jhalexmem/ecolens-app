@@ -148,6 +148,24 @@ img, svg, canvas {
   max-width: none;
 }
 
+/* ── MATA bus route direction arrows ─────────────────────────────────────── */
+/* A small CSS-only triangle (classic border trick — no image/SVG asset)
+   placed at intervals along each route's line, pointing the way buses
+   actually travel (see buildArrowPoints/bearingDeg in SensorMap.tsx, which
+   derive bearing straight from GTFS shapes.txt's already direction-ordered
+   points). This class only carries the static shape/size; each marker sets
+   its own route color and rotation inline (color feeds the `currentColor`
+   the border-bottom uses). Plain HTML <div>, not SVG/canvas, so the
+   max-width:100% custom-pane issue described above doesn't apply here. */
+.ecolens-mata-arrow {
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 9px solid currentColor;
+  opacity: 0.85;
+}
+
 /* ── Area-wind data-source note (bottom-right, shown alongside the wind
    legend while the area wind layer is active) ──────────────────────────── */
 

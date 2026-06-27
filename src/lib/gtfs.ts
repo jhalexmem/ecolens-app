@@ -75,6 +75,30 @@ interface ShapePoint {
 }
 
 /**
+ * Downloads + unzips MATA's GTFS feed once, returning a reader function for
+ * any member file's text content. Shared by fetchMataRoutesGeoJSON and
+ * fetchMataStopsGeoJSON below so both stay byte-for-byte in sync (same feed
+ * snapshot) without duplicating the fetch/unzip boilerplate. Next's fetch
+ * Data Cache (next: { revalidate: 86400 }) means a second call within the
+ * revalidate window reuses the cached response bytes rather than
+ * re-downloading, even though each is a separate serverless invocation.
+ */
+async function loadMataGtfsZip(): Promise<(name: string) => Promise<string>> {
+  const res = await fetch(MATA_GTFS_URL, { next: { revalidate: 86400 } });
+  if (!res.ok) {
+    throw new Error(`MATA GTFS HTTP ${res.status}`);
+  }
+  const buf = await res.arrayBuffer();
+  const zip = await JSZip.loadAsync(buf);
+
+  return async (name: string): Promise<string> => {
+    const file = zip.file(name);
+    if (!file) throw new Error(`GTFS zip missing ${name}`);
+    return file.async("string");
+  };
+}
+
+/**
  * Fetches MATA's GTFS zip, unzips it in memory, and converts
  * routes.txt + trips.txt + shapes.txt into a GeoJSON FeatureCollection of
  * LineStrings — one feature per unique route+shape (typically outbound and
@@ -86,18 +110,7 @@ export async function fetchMataRoutesGeoJSON(): Promise<{
   type: "FeatureCollection";
   features: GeoJSON.Feature[];
 }> {
-  const res = await fetch(MATA_GTFS_URL, { next: { revalidate: 86400 } });
-  if (!res.ok) {
-    throw new Error(`MATA GTFS HTTP ${res.status}`);
-  }
-  const buf = await res.arrayBuffer();
-  const zip = await JSZip.loadAsync(buf);
-
-  const readFile = async (name: string): Promise<string> => {
-    const file = zip.file(name);
-    if (!file) throw new Error(`GTFS zip missing ${name}`);
-    return file.async("string");
-  };
+  const readFile = await loadMataGtfsZip();
 
   const [routesTxt, tripsTxt, shapesTxt] = await Promise.all([
     readFile("routes.txt"),
@@ -169,6 +182,74 @@ export async function fetchMataRoutesGeoJSON(): Promise<{
       });
       count++;
     }
+  }
+
+  return { type: "FeatureCollection", features };
+}
+
+/**
+ * Fetches MATA's GTFS zip and converts stops.txt into a GeoJSON
+ * FeatureCollection of Points — one per official stop that's actually
+ * served by at least one bus trip (route_type 3), determined by walking
+ * stop_times.txt -> trips.txt -> routes.txt. Trolley-only stops (route_type
+ * 0) are excluded, mirroring the same BUS_ROUTE_TYPE filter
+ * fetchMataRoutesGeoJSON applies to route lines, so the stop markers always
+ * line up with whichever routes are drawn. Each feature's properties carry
+ * stop_name and, when present, the rider-facing stop_code (the short number
+ * printed on the physical stop sign/used for SMS arrival lookups) as a
+ * secondary "designation" alongside the name.
+ */
+export async function fetchMataStopsGeoJSON(): Promise<{
+  type: "FeatureCollection";
+  features: GeoJSON.Feature[];
+}> {
+  const readFile = await loadMataGtfsZip();
+
+  const [routesTxt, tripsTxt, stopTimesTxt, stopsTxt] = await Promise.all([
+    readFile("routes.txt"),
+    readFile("trips.txt"),
+    readFile("stop_times.txt"),
+    readFile("stops.txt"),
+  ]);
+
+  const routes = parseCsv(routesTxt);
+  const trips = parseCsv(tripsTxt);
+  const stopTimes = parseCsv(stopTimesTxt);
+  const stops = parseCsv(stopsTxt);
+
+  const routeById = new Map(routes.map((r) => [r.route_id, r]));
+
+  // trip_id -> included only when that trip belongs to a bus route.
+  const busTripIds = new Set<string>();
+  for (const trip of trips) {
+    if (!trip.trip_id || !trip.route_id) continue;
+    const route = routeById.get(trip.route_id);
+    if (route?.route_type === BUS_ROUTE_TYPE) busTripIds.add(trip.trip_id);
+  }
+
+  // stop_id -> included once any bus trip's stop_times rows reference it.
+  const busStopIds = new Set<string>();
+  for (const st of stopTimes) {
+    if (st.trip_id && st.stop_id && busTripIds.has(st.trip_id)) {
+      busStopIds.add(st.stop_id);
+    }
+  }
+
+  const features: GeoJSON.Feature[] = [];
+  for (const stop of stops) {
+    if (!stop.stop_id || !busStopIds.has(stop.stop_id)) continue;
+    const lat = parseFloat(stop.stop_lat);
+    const lng = parseFloat(stop.stop_lon);
+    if (Number.isNaN(lat) || Number.isNaN(lng)) continue;
+    features.push({
+      type: "Feature",
+      properties: {
+        stop_id: stop.stop_id,
+        name: stop.stop_name || "",
+        code: stop.stop_code || "",
+      },
+      geometry: { type: "Point", coordinates: [lng, lat] },
+    });
   }
 
   return { type: "FeatureCollection", features };

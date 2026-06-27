@@ -33,6 +33,89 @@ function mapLinksHtml(lat: number, lng: number): string {
   );
 }
 
+/** Great-circle distance in meters (haversine) — used to walk a route's
+ *  LineString in real-world units so direction-arrow spacing looks
+ *  consistent regardless of how densely GTFS happened to sample that
+ *  particular shape's points. */
+function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+/** Initial compass bearing (0-360, 0 = north) from point 1 to point 2 —
+ *  used to rotate each direction-arrow icon to match the way the bus
+ *  actually travels along that stretch of the route (shapes.txt's point
+ *  order already encodes travel direction, see lib/gtfs.ts). */
+function bearingDeg(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const toDeg = (r: number) => (r * 180) / Math.PI;
+  const phi1 = toRad(lat1);
+  const phi2 = toRad(lat2);
+  const dLng = toRad(lng2 - lng1);
+  const y = Math.sin(dLng) * Math.cos(phi2);
+  const x = Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(dLng);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+/** Walks an ordered [lat, lng] polyline and returns evenly-spaced
+ *  {lat, lng, bearing} points (roughly every spacingMeters of real-world
+ *  distance) suitable for placing small rotated direction-arrow icons. Skips
+ *  arrows within a short buffer of either end of the line so they don't
+ *  visually collide with the route's terminus, and falls back to a single
+ *  midpoint arrow on lines shorter than the spacing so very short shapes
+ *  still get a direction hint. */
+function buildArrowPoints(
+  path: [number, number][],
+  spacingMeters: number
+): { lat: number; lng: number; bearing: number }[] {
+  if (path.length < 2) return [];
+
+  const segLens: number[] = [];
+  let total = 0;
+  for (let i = 0; i < path.length - 1; i++) {
+    const len = haversineMeters(path[i][0], path[i][1], path[i + 1][0], path[i + 1][1]);
+    segLens.push(len);
+    total += len;
+  }
+
+  const END_BUFFER = Math.min(80, total / 3);
+  const pointAt = (dist: number): { lat: number; lng: number; bearing: number } => {
+    let remaining = dist;
+    for (let i = 0; i < segLens.length; i++) {
+      if (remaining <= segLens[i] || i === segLens.length - 1) {
+        const [lat1, lng1] = path[i];
+        const [lat2, lng2] = path[i + 1];
+        const t = segLens[i] > 0 ? Math.min(remaining / segLens[i], 1) : 0;
+        return {
+          lat: lat1 + (lat2 - lat1) * t,
+          lng: lng1 + (lng2 - lng1) * t,
+          bearing: bearingDeg(lat1, lng1, lat2, lng2),
+        };
+      }
+      remaining -= segLens[i];
+    }
+    const [lat1, lng1] = path[path.length - 2];
+    const [lat2, lng2] = path[path.length - 1];
+    return { lat: lat2, lng: lng2, bearing: bearingDeg(lat1, lng1, lat2, lng2) };
+  };
+
+  if (total <= spacingMeters) {
+    return total > 0 ? [pointAt(total / 2)] : [];
+  }
+
+  const points: { lat: number; lng: number; bearing: number }[] = [];
+  for (let d = spacingMeters; d < total - END_BUFFER; d += spacingMeters) {
+    points.push(pointAt(d));
+  }
+  return points;
+}
+
 type WindGridPoint = {
   lat: number;
   lng: number;
@@ -594,6 +677,23 @@ export default function SensorMap({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mataRoutesLayerRef = useRef<any>(null);
   const mataRoutesLoadedRef = useRef(false);
+  // True while the "MATA Bus Routes" checkbox itself is checked — independent
+  // of mataStopsLayerRef's own map membership, which additionally depends on
+  // zoom (see MATA_STOPS_MIN_ZOOM/updateMataStopsVisibility below). Mirrors
+  // the *ActiveRef idiom used by the boundary-line layers further down.
+  const mataRoutesActiveRef = useRef(false);
+  // Official bus stop markers — a separate GeoJSON Point layer from the
+  // route lines above (different feed file, stops.txt via stop_times.txt,
+  // see lib/gtfs.ts), not registered in the layers control itself. Its
+  // on-map membership is governed entirely by the "MATA Bus Routes"
+  // checkbox + current zoom (same "controlled by another layer's checkbox"
+  // idiom already used for windSourceNoteRef/"Wind Pattern" below), so
+  // turning routes on/off shows/hides stops too, with stops additionally
+  // disappearing at city-wide zooms where individual dots would just be
+  // clutter.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mataStopsLayerRef = useRef<any>(null);
+  const mataStopsLoadedRef = useRef(false);
   // Boundary-line overlays (U.S. House/TN House/TN Senate districts,
   // counties, ZIP/ZCTA) — plain L.geoJSON vector outlines, no fill, sourced
   // server-side from TNMap (the 3 legislative-district layers) or the
@@ -1032,6 +1132,71 @@ export default function SensorMap({
               hitArea.openTooltip();
             });
             mataRoutesLayerRef.current?.addLayer(hitArea);
+
+            // Small "tasteful" direction arrows along the route, spaced by
+            // real-world distance (not GTFS point density) via
+            // buildArrowPoints. shapes.txt's point order already encodes
+            // which way buses travel this shape (see lib/gtfs.ts), so the
+            // bearing between consecutive points is all that's needed —
+            // no extra data fetch. Plain CSS-triangle divIcons, not SVG, so
+            // none of the custom-pane max-width:100% issue above applies;
+            // left in Leaflet's default markerPane (above mataRoutesPane)
+            // so arrows always stay visible on top of the line itself.
+            // interactive: false (same as the highway shield labels above)
+            // so a near-miss tap still reaches the route/hit-area beneath.
+            const ROUTE_ARROW_SPACING_METERS = 450;
+            const latLngPath: [number, number][] = coords.map(
+              ([lng, lat]: [number, number]) => [lat, lng]
+            );
+            const arrowColor = p.color || "#3A8FCE";
+            for (const { lat, lng, bearing } of buildArrowPoints(latLngPath, ROUTE_ARROW_SPACING_METERS)) {
+              const arrowIcon = L.divIcon({
+                className: "ecolens-mata-arrow-wrap",
+                html: `<div class="ecolens-mata-arrow" style="color:${arrowColor};transform:rotate(${bearing}deg);"></div>`,
+                iconSize: [10, 10],
+                iconAnchor: [5, 5],
+              });
+              mataRoutesLayerRef.current?.addLayer(
+                L.marker([lat, lng], { icon: arrowIcon, interactive: false })
+              );
+            }
+          },
+        });
+
+        // Official bus stop dots — small circleMarkers (SVG, same renderer
+        // as the boundary polygons), so they share mataRoutesPane rather
+        // than getting their own pane; that pane already has the
+        // `.leaflet-mataRoutes-pane svg { max-width: none }` override added
+        // above for the route lines, which covers any SVG drawn in that
+        // pane, not just <path>s — no new CSS needed for these.
+        const MATA_STOP_RADIUS = 4;
+        const MATA_STOP_HOVER_RADIUS = 6;
+        mataStopsLayerRef.current = L.geoJSON(undefined, {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          pointToLayer: (_feature: any, latlng: any) =>
+            L.circleMarker(latlng, {
+              radius: MATA_STOP_RADIUS,
+              color: "#1A1A18",
+              weight: 1.5,
+              fillColor: "#ffffff",
+              fillOpacity: 1,
+              pane: "mataRoutesPane",
+            }),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          onEachFeature: (feature: any, layer: any) => {
+            const p = feature.properties ?? {};
+            const label = [p.name, p.code ? `Stop #${p.code}` : null].filter(Boolean).join(" — ");
+            if (!label) return;
+
+            const tooltipText = escapeHtml(label);
+            layer.bindTooltip(tooltipText, {
+              sticky: true,
+              direction: "auto",
+              className: "ecolens-facility-tooltip",
+            });
+            layer.on("mouseover", () => layer.setStyle({ radius: MATA_STOP_HOVER_RADIUS }));
+            layer.on("mouseout", () => layer.setStyle({ radius: MATA_STOP_RADIUS }));
+            layer.on("click", () => layer.openTooltip());
           },
         });
 
@@ -1122,6 +1287,42 @@ export default function SensorMap({
               mataRoutesLoadedRef.current = true;
               mataRoutesLayerRef.current?.clearLayers();
               mataRoutesLayerRef.current?.addData(geojson);
+            })
+            .catch(() => {
+              // Best-effort overlay — silently skip on network error.
+            });
+        };
+
+        // Stops only add value once you're zoomed in enough to make out
+        // individual streets — at a city-wide zoom hundreds of dots would
+        // just be noise on top of the route lines, which are still useful
+        // at any zoom. "13" is roughly neighborhood-level (a few blocks
+        // across the viewport).
+        const MATA_STOPS_MIN_ZOOM = 13;
+        const updateMataStopsVisibility = () => {
+          if (!mapRef.current || !mataStopsLayerRef.current) return;
+          const shouldShow =
+            mataRoutesActiveRef.current && mapRef.current.getZoom() >= MATA_STOPS_MIN_ZOOM;
+          const onMap = mapRef.current.hasLayer(mataStopsLayerRef.current);
+          if (shouldShow && !onMap) {
+            mataStopsLayerRef.current.addTo(mapRef.current);
+          } else if (!shouldShow && onMap) {
+            mapRef.current.removeLayer(mataStopsLayerRef.current);
+          }
+        };
+
+        // Same fetch-once idiom as loadMataRoutes — stops.txt is a fixed
+        // set, no bbox/pan dependency.
+        const loadMataStops = () => {
+          if (mataStopsLoadedRef.current) return;
+          fetch("/api/transit/mata-stops")
+            .then((res) => (res.ok ? res.json() : null))
+            .then((geojson) => {
+              if (!geojson) return;
+              mataStopsLoadedRef.current = true;
+              mataStopsLayerRef.current?.clearLayers();
+              mataStopsLayerRef.current?.addData(geojson);
+              updateMataStopsVisibility();
             })
             .catch(() => {
               // Best-effort overlay — silently skip on network error.
@@ -1253,7 +1454,10 @@ export default function SensorMap({
             return;
           }
           if (e.name === "MATA Bus Routes") {
+            mataRoutesActiveRef.current = true;
             loadMataRoutes();
+            loadMataStops();
+            updateMataStopsVisibility();
             return;
           }
           const key = boundaryOverlayNames[e.name];
@@ -1267,8 +1471,11 @@ export default function SensorMap({
             return;
           }
           if (e.name === "MATA Bus Routes") {
-            // Nothing to clean up — mataRoutesLoadedRef keeps the fetched
-            // data cached so re-checking the box doesn't refetch.
+            // mataRoutesLoadedRef/mataStopsLoadedRef keep the fetched data
+            // cached so re-checking the box doesn't refetch — just hide the
+            // stop dots along with the lines.
+            mataRoutesActiveRef.current = false;
+            updateMataStopsVisibility();
             return;
           }
           const key = boundaryOverlayNames[e.name];
@@ -1288,6 +1495,10 @@ export default function SensorMap({
             if (zipDebounceRef.current) clearTimeout(zipDebounceRef.current);
             zipDebounceRef.current = setTimeout(loadZipLines, 400);
           }
+          // 'moveend' also fires after a zoom change completes, which is
+          // exactly when stop-dot visibility needs to be reconsidered — no
+          // separate 'zoomend' listener needed.
+          updateMataStopsVisibility();
         });
 
         // ── Major facilities (Colossus I/II, MACROHARDRR, former Duke Energy
