@@ -679,7 +679,7 @@ export default function SensorMap({
   const mataRoutesLoadedRef = useRef(false);
   // True while the "MATA Bus Routes" checkbox itself is checked — independent
   // of mataStopsLayerRef's own map membership, which additionally depends on
-  // zoom (see MATA_STOPS_MIN_ZOOM/updateMataStopsVisibility below). Mirrors
+  // zoom (see MATA_DETAIL_MIN_ZOOM/updateMataDetailVisibility below). Mirrors
   // the *ActiveRef idiom used by the boundary-line layers further down.
   const mataRoutesActiveRef = useRef(false);
   // Official bus stop markers — a separate GeoJSON Point layer from the
@@ -694,6 +694,16 @@ export default function SensorMap({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mataStopsLayerRef = useRef<any>(null);
   const mataStopsLoadedRef = useRef(false);
+  // Direction-arrow divIcons live in their own plain L.layerGroup, separate
+  // from mataRoutesLayerRef's L.geoJSON (which they were originally added
+  // into directly). Each is a real DOM <div> marker, and a city-wide view
+  // can rack up thousands of them across every route shape — cheap when
+  // only a neighborhood's worth are on the map, but enough to make pan/zoom
+  // visibly stutter once every route in the system is showing at once. So,
+  // same as mataStopsLayerRef, arrows are pulled off the map entirely below
+  // MATA_DETAIL_MIN_ZOOM rather than just rendered-but-tiny.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mataArrowsLayerRef = useRef<any>(null);
   // Boundary-line overlays (U.S. House/TN House/TN Senate districts,
   // counties, ZIP/ZCTA) — plain L.geoJSON vector outlines, no fill, sourced
   // server-side from TNMap (the 3 legislative-district layers) or the
@@ -1080,6 +1090,7 @@ export default function SensorMap({
         // label on hover, same idiom as the highway shield labels.
         const MATA_BASE_WEIGHT = 4;
         const MATA_HOVER_WEIGHT = 8;
+        mataArrowsLayerRef.current = L.layerGroup();
         mataRoutesLayerRef.current = L.geoJSON(undefined, {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           style: (feature: any) => ({
@@ -1139,11 +1150,14 @@ export default function SensorMap({
             // which way buses travel this shape (see lib/gtfs.ts), so the
             // bearing between consecutive points is all that's needed —
             // no extra data fetch. Plain CSS-triangle divIcons, not SVG, so
-            // none of the custom-pane max-width:100% issue above applies;
-            // left in Leaflet's default markerPane (above mataRoutesPane)
-            // so arrows always stay visible on top of the line itself.
+            // none of the custom-pane max-width:100% issue above applies.
             // interactive: false (same as the highway shield labels above)
             // so a near-miss tap still reaches the route/hit-area beneath.
+            // Added to mataArrowsLayerRef (its own layerGroup), NOT
+            // mataRoutesLayerRef — kept off the map below MATA_DETAIL_MIN_ZOOM
+            // (see updateMataDetailVisibility) since every route's full set
+            // of arrows rendered at once city-wide is enough real DOM nodes
+            // to make pan/zoom stutter.
             const ROUTE_ARROW_SPACING_METERS = 450;
             const latLngPath: [number, number][] = coords.map(
               ([lng, lat]: [number, number]) => [lat, lng]
@@ -1156,7 +1170,7 @@ export default function SensorMap({
                 iconSize: [10, 10],
                 iconAnchor: [5, 5],
               });
-              mataRoutesLayerRef.current?.addLayer(
+              mataArrowsLayerRef.current?.addLayer(
                 L.marker([lat, lng], { icon: arrowIcon, interactive: false })
               );
             }
@@ -1287,27 +1301,46 @@ export default function SensorMap({
               mataRoutesLoadedRef.current = true;
               mataRoutesLayerRef.current?.clearLayers();
               mataRoutesLayerRef.current?.addData(geojson);
+              // addData() above is what actually runs onEachFeature, which is
+              // what populates mataArrowsLayerRef — so arrow visibility can
+              // only be correctly evaluated after this line.
+              updateMataDetailVisibility();
             })
             .catch(() => {
               // Best-effort overlay — silently skip on network error.
             });
         };
 
-        // Stops only add value once you're zoomed in enough to make out
-        // individual streets — at a city-wide zoom hundreds of dots would
-        // just be noise on top of the route lines, which are still useful
-        // at any zoom. "13" is roughly neighborhood-level (a few blocks
-        // across the viewport).
-        const MATA_STOPS_MIN_ZOOM = 13;
-        const updateMataStopsVisibility = () => {
-          if (!mapRef.current || !mataStopsLayerRef.current) return;
+        // Stops + direction arrows only add value once you're zoomed in
+        // enough to make out individual streets — at a city-wide zoom
+        // hundreds of dots (and thousands of arrow divIcons across every
+        // route) would just be noise on top of the route lines, which are
+        // still useful at any zoom, AND each arrow/stop is a real DOM marker
+        // node, so rendering all of them at once city-wide is enough to
+        // visibly stutter pan/zoom on a phone. "13" is roughly
+        // neighborhood-level (a few blocks across the viewport).
+        const MATA_DETAIL_MIN_ZOOM = 13;
+        const updateMataDetailVisibility = () => {
+          if (!mapRef.current) return;
           const shouldShow =
-            mataRoutesActiveRef.current && mapRef.current.getZoom() >= MATA_STOPS_MIN_ZOOM;
-          const onMap = mapRef.current.hasLayer(mataStopsLayerRef.current);
-          if (shouldShow && !onMap) {
-            mataStopsLayerRef.current.addTo(mapRef.current);
-          } else if (!shouldShow && onMap) {
-            mapRef.current.removeLayer(mataStopsLayerRef.current);
+            mataRoutesActiveRef.current && mapRef.current.getZoom() >= MATA_DETAIL_MIN_ZOOM;
+
+          if (mataStopsLayerRef.current) {
+            const onMap = mapRef.current.hasLayer(mataStopsLayerRef.current);
+            if (shouldShow && !onMap) {
+              mataStopsLayerRef.current.addTo(mapRef.current);
+            } else if (!shouldShow && onMap) {
+              mapRef.current.removeLayer(mataStopsLayerRef.current);
+            }
+          }
+
+          if (mataArrowsLayerRef.current) {
+            const onMap = mapRef.current.hasLayer(mataArrowsLayerRef.current);
+            if (shouldShow && !onMap) {
+              mataArrowsLayerRef.current.addTo(mapRef.current);
+            } else if (!shouldShow && onMap) {
+              mapRef.current.removeLayer(mataArrowsLayerRef.current);
+            }
           }
         };
 
@@ -1322,7 +1355,7 @@ export default function SensorMap({
               mataStopsLoadedRef.current = true;
               mataStopsLayerRef.current?.clearLayers();
               mataStopsLayerRef.current?.addData(geojson);
-              updateMataStopsVisibility();
+              updateMataDetailVisibility();
             })
             .catch(() => {
               // Best-effort overlay — silently skip on network error.
@@ -1457,7 +1490,7 @@ export default function SensorMap({
             mataRoutesActiveRef.current = true;
             loadMataRoutes();
             loadMataStops();
-            updateMataStopsVisibility();
+            updateMataDetailVisibility();
             return;
           }
           const key = boundaryOverlayNames[e.name];
@@ -1473,9 +1506,9 @@ export default function SensorMap({
           if (e.name === "MATA Bus Routes") {
             // mataRoutesLoadedRef/mataStopsLoadedRef keep the fetched data
             // cached so re-checking the box doesn't refetch — just hide the
-            // stop dots along with the lines.
+            // stop dots + arrows along with the lines.
             mataRoutesActiveRef.current = false;
-            updateMataStopsVisibility();
+            updateMataDetailVisibility();
             return;
           }
           const key = boundaryOverlayNames[e.name];
@@ -1496,9 +1529,9 @@ export default function SensorMap({
             zipDebounceRef.current = setTimeout(loadZipLines, 400);
           }
           // 'moveend' also fires after a zoom change completes, which is
-          // exactly when stop-dot visibility needs to be reconsidered — no
-          // separate 'zoomend' listener needed.
-          updateMataStopsVisibility();
+          // exactly when stop-dot/arrow visibility needs to be
+          // reconsidered — no separate 'zoomend' listener needed.
+          updateMataDetailVisibility();
         });
 
         // ── Major facilities (Colossus I/II, MACROHARDRR, former Duke Energy
@@ -1550,7 +1583,10 @@ export default function SensorMap({
         const showLocateError = (message: string) => {
           setLocateError(message);
           if (locateErrorTimeoutRef.current) clearTimeout(locateErrorTimeoutRef.current);
-          locateErrorTimeoutRef.current = setTimeout(() => setLocateError(null), 4000);
+          // 6s, not 4s — the permission-denied/insecure-context messages run
+          // longer than the original short messages this was tuned for, and
+          // need a moment longer to read on a phone toast.
+          locateErrorTimeoutRef.current = setTimeout(() => setLocateError(null), 6000);
         };
 
         const updateConeRotation = (heading: number) => {
@@ -1719,6 +1755,17 @@ export default function SensorMap({
             showLocateError("Location isn't supported in this browser.");
             return;
           }
+          // Geolocation is blocked outright (no permission prompt at all) on
+          // any non-secure origin except the literal hostname "localhost" —
+          // e.g. opening the dev server via a LAN IP like http://192.168.x.x:3000
+          // on a phone. That always surfaces as the same PERMISSION_DENIED
+          // code as an actual user denial below, so it's worth a distinct,
+          // accurate message here instead of letting it fall through to
+          // "permission denied" and looking like an iOS Settings problem.
+          if (typeof window !== "undefined" && window.isSecureContext === false) {
+            showLocateError("Location requires a secure (https) connection.");
+            return;
+          }
           locateStateRef.current = "tracking";
           updateLocateButton();
           requestOrientationIfAvailable();
@@ -1734,8 +1781,16 @@ export default function SensorMap({
           locateWatchIdRef.current = navigator.geolocation.watchPosition(
             handlePosition,
             (err) => {
-              // 1 = PERMISSION_DENIED per the Geolocation spec.
-              showLocateError(err.code === 1 ? "Location permission denied." : "Location unavailable.");
+              // 1 = PERMISSION_DENIED per the Geolocation spec. On iOS this
+              // fires with NO new prompt if the site (or Safari generally)
+              // was ever denied location before — re-granting has to happen
+              // in Settings > Privacy & Security > Location Services, not
+              // anything triggerable from in-page script.
+              showLocateError(
+                err.code === 1
+                  ? "Location permission denied. Check Settings > Privacy > Location Services."
+                  : "Location unavailable."
+              );
               stopLocating();
             },
             { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
